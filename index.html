@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1, user-scalable=no" />
+<title>Undertow</title>
+<link rel="stylesheet" href="style.css?v=3" />
+</head>
+<body>
+  <video id="camera" playsinline muted autoplay></video>
+  <canvas id="gl"></canvas>
+
+  <div id="startOverlay">
+    <div id="startBtn">tap to begin</div>
+  </div>
+
+  <button id="gearBtn" aria-label="controls">⚙</button>
+  <button id="flipBtn" aria-label="flip camera">⟲</button>
+
+  <div id="panel">
+    <div class="row"><label>distortion</label><input type="range" id="p_distortion" min="0" max="2" step="0.01"></div>
+    <div class="row"><label>swell speed</label><input type="range" id="p_waveSpeed" min="0" max="2" step="0.01"></div>
+    <div class="row"><label>ripple scale</label><input type="range" id="p_rippleScale" min="0.5" max="6" step="0.05"></div>
+    <div class="row"><label>edge sensitivity</label><input type="range" id="p_edgeSensitivity" min="0.01" max="1" step="0.005"></div>
+    <div class="row"><label>glisten amount</label><input type="range" id="p_glistenIntensity" min="0" max="3" step="0.01"></div>
+    <div class="row"><label>glisten scale</label><input type="range" id="p_glintThreshold" min="0" max="1" step="0.005"></div>
+    <div class="row"><label>contrast</label><input type="range" id="p_contrast" min="0.5" max="2.5" step="0.01"></div>
+    <div class="row"><label>brightness</label><input type="range" id="p_brightness" min="-0.5" max="0.5" step="0.005"></div>
+    <div class="row"><label>vignette</label><input type="range" id="p_vignette" min="0" max="2" step="0.01"></div>
+    <div class="row"><label>grain</label><input type="range" id="p_grain" min="0" max="0.3" step="0.002"></div>
+    <div class="row"><label>depth murk</label><input type="range" id="p_murk" min="0" max="1" step="0.01"></div>
+    <div class="row"><label>b&amp;w saturation</label><input type="range" id="p_saturation" min="0" max="1" step="0.01"></div>
+    <div class="row"><label>ghost offset</label><input type="range" id="p_ghostOffset" min="0" max="30" step="0.5"></div>
+    <div class="row"><label>ghost opacity</label><input type="range" id="p_overlayOpacity" min="0" max="0.5" step="0.01"></div>
+    <div class="row"><label>focus blur</label><input type="range" id="p_focusBlur" min="0" max="8" step="0.1"></div>
+    <button id="resetBtn">reset defaults</button>
+  </div>
+
+  <script src="main.js"></script>
+</body>
+</html>
