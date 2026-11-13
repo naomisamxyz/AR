@@ -459,7 +459,9 @@ async function init() {
   // actual render target down and lets the GPU/compositor upscale the
   // canvas back up to fill the screen via CSS, which is far cheaper
   // than running the full per-pixel cost at every physical pixel.
-  const RENDER_SCALE = 0.65;
+  // was 0.65 — dropped further for the Pi. Change back to 0.65 (or 1)
+  // to restore the sharper render.
+  const RENDER_SCALE = 0.45;
   function resize() {
     const dpr = window.devicePixelRatio || 1;
     const w = Math.floor(window.innerWidth * dpr * RENDER_SCALE);

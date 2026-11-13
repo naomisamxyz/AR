@@ -119,16 +119,18 @@ float snoise(vec2 v){
   return 130.0 * dot(m, g);
 }
 
-// cut from 3 octaves to 2 — this runs on EVERY pixel unconditionally
-// (the base warp, unlike glow/line-doubling, has no on/off switch), so
-// it's the single biggest fixed per-pixel cost in the whole shader.
-// The 3rd octave only added fine high-frequency detail that's easy to
-// lose in a live camera feed anyway.
+// was 3 octaves, then 2; cut further to 1 (a single snoise call, no
+// loop/rotation needed) for the Pi — this runs on EVERY pixel
+// unconditionally (the base warp has no on/off switch), so it's the
+// single biggest fixed per-pixel cost in the whole shader. To restore
+// 2 octaves, change the loop bound back to "i < 2". Loses a layer of
+// cross-interference detail — the warp looks a bit more like one
+// simple noise field and less "choppy"/complex.
 float fbm(vec2 p){
   float v = 0.0;
   float amp = 0.5;
   mat2 rot = mat2(0.8, 0.6, -0.6, 0.8);
-  for (int i = 0; i < 2; i++) {
+  for (int i = 0; i < 1; i++) {
     v += amp * snoise(p);
     p = rot * p * 2.02;
     amp *= 0.55;
@@ -259,15 +261,17 @@ vec2 plainCameraUv(vec2 canvasUv){
 // fleck): a lone bright pixel gets dragged back down by its dim
 // neighbors in this average, while a genuinely larger bright patch
 // stays bright, since its neighbors are bright too.
-// Cut from 5 taps to 3 (center + one diagonal pair) as part of halving
-// the glow pipeline's overall cost — still enough to filter out
-// single-pixel specks, just less perfectly isotropic about it.
+// Was 5 taps, then 3 (center + one diagonal pair); cut further to a
+// single center tap for the Pi — to restore the 3-tap average, bring
+// back the l1/l2 lines (each was commented out just below) and the
+// /3.0 divide. Loses the "ignore single-pixel specks" filtering this
+// was for, so isolated bright dots may bloom individually again.
 float areaLuminance(vec2 cameraUv){
-  vec2 px = 1.5 / uResolution;
+  // vec2 px = 1.5 / uResolution;
   float l0 = luminance(sampleCameraAt(cameraUv));
-  float l1 = luminance(sampleCameraAt(cameraUv + vec2(px.x, px.y)));
-  float l2 = luminance(sampleCameraAt(cameraUv - vec2(px.x, px.y)));
-  return (l0 + l1 + l2) / 3.0;
+  // float l1 = luminance(sampleCameraAt(cameraUv + vec2(px.x, px.y)));
+  // float l2 = luminance(sampleCameraAt(cameraUv - vec2(px.x, px.y)));
+  return l0; // was (l0 + l1 + l2) / 3.0;
 }
 
 // glow: a ring of 8 samples around this pixel, kept only where bright,
@@ -353,19 +357,24 @@ void main(){
   vec3 outColor = mix(vec3(result), clamp(toned, 0.0, 1.0), clamp(uSaturation, 0.0, 1.0));
 
   // ---- glow (bloom), ported from AR1 ----
-  // ring cut from 8 taps to 6 (60° apart instead of 45°), combined with
-  // areaLuminance's 5->3 cut above: roughly 40 texture reads per pixel
-  // down to 18 — about half the original cost, in exchange for a
-  // slightly less perfectly round/isotropic bloom shape
+  // ring was 8 taps, then 6 (60° apart); cut further to 4 (90° apart)
+  // for the Pi, combined with areaLuminance's cut to 1 tap above —
+  // roughly 40 texture reads per pixel down to 4. To restore the
+  // 6-direction ring, bring back the two commented-out bloomTap calls
+  // below and change both the "/ 6.0" divide and... — at a cost to how
+  // round/isotropic the bloom shape looks (4 directions reads more
+  // like a soft plus-shape than a circle up close)
   if (uGlow > 0.001) {
     float radius = 10.0 / min(uResolution.x, uResolution.y);
     vec3 bloom = bloomTap(uv, vec2(1.0, 0.0), radius, warpDisp)
-        + bloomTap(uv, vec2(0.5, 0.8660254), radius, warpDisp)
-        + bloomTap(uv, vec2(-0.5, 0.8660254), radius, warpDisp)
+        // + bloomTap(uv, vec2(0.5, 0.8660254), radius, warpDisp)
+        // + bloomTap(uv, vec2(-0.5, 0.8660254), radius, warpDisp)
         + bloomTap(uv, vec2(-1.0, 0.0), radius, warpDisp)
-        + bloomTap(uv, vec2(-0.5, -0.8660254), radius, warpDisp)
-        + bloomTap(uv, vec2(0.5, -0.8660254), radius, warpDisp);
-    outColor += (bloom / 6.0) * uGlow;
+        // + bloomTap(uv, vec2(-0.5, -0.8660254), radius, warpDisp)
+        // + bloomTap(uv, vec2(0.5, -0.8660254), radius, warpDisp)
+        + bloomTap(uv, vec2(0.0, 1.0), radius, warpDisp)
+        + bloomTap(uv, vec2(0.0, -1.0), radius, warpDisp);
+    outColor += (bloom / 4.0) * uGlow; // was / 6.0
     outColor = clamp(outColor, 0.0, 1.0);
   }
 
