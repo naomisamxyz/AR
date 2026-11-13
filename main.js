@@ -28,19 +28,19 @@ const DEFAULTS = {
   // uOverlayOffset's use in fragment.glsl) — where the object sits
   // BEFORE any gyro pan is added. Negative X + positive Y is up-and-left
   // (vUv.x increases rightward, vUv.y increases UPWARD here).
-  overlayOffsetX: -0.5,
+  overlayOffsetX: -0.7,
   // separate Y offsets per screen shape — the conversion to actual
   // on-screen uv shift (see uOverlayOffset's use in fragment.glsl)
   // scales Y by shorterSide/height, which on its own doesn't move the
   // object up by the same amount on a tall portrait phone as on a wide
   // landscape screen for the same authored number, so these are tuned
   // independently rather than sharing one value
-  overlayOffsetYPortrait: 0.6,
-  overlayOffsetYLandscape: 0.33,
-  overlayScale: 0.59,
+  overlayOffsetYPortrait: 0.69,
+  overlayOffsetYLandscape: 0.38,
+  overlayScale: 0.4,
   // strength of the separate shading/shadow layer's darkening (see
   // shadingVideo/uShading above and fragment.glsl) — 0 disables it
-  shadingStrength: 0.15,
+  shadingStrength: 0.10,
   // halo shadow sampled from the glow's own shape at a larger scale,
   // so it reaches past the object's edges — see uOverlayShadowStrength
   overlayShadowStrength: 0,
@@ -449,13 +449,21 @@ async function init() {
     uTapTime: loc("uTapTime"),
   };
 
+  // the shader is no longer the single cheap pass it was when
+  // RENDER_SCALE=1 was first justified — line-doubling, the 6-direction
+  // glow bloom (3-tap luminance average per direction = 18 extra
+  // samples), the domain-warp noise, and the overlay/shading/halo
+  // compositing have all stacked up since. Rendering at full native
+  // resolution times device pixel ratio makes this fill-rate-bound on
+  // weak GPUs (the Raspberry Pi 3 kiosk especially) — this scales the
+  // actual render target down and lets the GPU/compositor upscale the
+  // canvas back up to fill the screen via CSS, which is far cheaper
+  // than running the full per-pixel cost at every physical pixel.
+  const RENDER_SCALE = 0.65;
   function resize() {
-    // full native resolution — the shader is now a single cheap pass
-    // (see the Jacobian-approximated warp in fragment.glsl), so there's
-    // no need to render under the screen's real pixel density anymore
     const dpr = window.devicePixelRatio || 1;
-    const w = Math.floor(window.innerWidth * dpr);
-    const h = Math.floor(window.innerHeight * dpr);
+    const w = Math.floor(window.innerWidth * dpr * RENDER_SCALE);
+    const h = Math.floor(window.innerHeight * dpr * RENDER_SCALE);
     if (canvas.width !== w || canvas.height !== h) {
       canvas.width = w;
       canvas.height = h;
@@ -488,7 +496,13 @@ async function init() {
   // comes back up.
   let avgFrameMs = 16.7;
   let lastFrameTimeMs = null;
-  let perfDegradeLevel = 0; // 0 = everything on, 1 = glow off, 2 = glow + line-doubling off
+  // 0 = everything on, 1 = glow off, 2 = glow + line-doubling off,
+  // 3 = also the overlay video layer (object + shading + halo shadow)
+  // off, which additionally skips all three of ITS per-frame video
+  // texture uploads below — those texImage2D calls aren't free either,
+  // so this is worth having as a last resort on something as weak as
+  // the Pi 3
+  let perfDegradeLevel = 0;
   let lastDegradeChangeMs = 0;
   const PERF_BAD_MS = 45; // sustained average below ~22fps -> degrade further
   const PERF_GOOD_MS = 28; // sustained average above ~35fps -> recover a step
@@ -505,7 +519,7 @@ async function init() {
     }
     lastFrameTimeMs = frameNowMs;
     if (frameNowMs - lastDegradeChangeMs > PERF_COOLDOWN_MS) {
-      if (avgFrameMs > PERF_BAD_MS && perfDegradeLevel < 2) {
+      if (avgFrameMs > PERF_BAD_MS && perfDegradeLevel < 3) {
         perfDegradeLevel++;
         lastDegradeChangeMs = frameNowMs;
       } else if (avgFrameMs < PERF_GOOD_MS && perfDegradeLevel > 0) {
@@ -514,6 +528,7 @@ async function init() {
       }
     }
     const effectiveGlow = perfDegradeLevel >= 1 ? 0 : params.glow;
+    const overlayDegraded = perfDegradeLevel >= 3;
     const effectiveGhostOpacity = perfDegradeLevel >= 2 ? 0 : params.ghostOpacity;
 
     const now = (performance.now() - startTime) / 1000 + phaseOffset;
@@ -521,12 +536,12 @@ async function init() {
     gl.bindTexture(gl.TEXTURE_2D, tex);
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGB, gl.RGB, gl.UNSIGNED_BYTE, video);
 
-    if (overlayVideo.readyState >= overlayVideo.HAVE_CURRENT_DATA) {
+    if (!overlayDegraded && overlayVideo.readyState >= overlayVideo.HAVE_CURRENT_DATA) {
       gl.bindTexture(gl.TEXTURE_2D, overlayTex);
       gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGB, gl.RGB, gl.UNSIGNED_BYTE, overlayVideo);
     }
 
-    if (shadingVideo.readyState >= shadingVideo.HAVE_CURRENT_DATA) {
+    if (!overlayDegraded && shadingVideo.readyState >= shadingVideo.HAVE_CURRENT_DATA) {
       gl.bindTexture(gl.TEXTURE_2D, shadingTex);
       gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGB, gl.RGB, gl.UNSIGNED_BYTE, shadingVideo);
     }
@@ -593,7 +608,7 @@ async function init() {
     gl.uniform2f(U.uResolution, canvas.width, canvas.height);
     gl.uniform2f(U.uCameraAspectFit, fitX, fitY);
     gl.uniform2f(U.uOverlayAspectFit, ovFitX, ovFitY);
-    gl.uniform1f(U.uOverlayOpacity, params.overlayOpacity * overlayFadeMultiplier(frameNowMs));
+    gl.uniform1f(U.uOverlayOpacity, overlayDegraded ? 0 : params.overlayOpacity * overlayFadeMultiplier(frameNowMs));
     // clamp only the X (side) offset so the object can't get pushed off
     // the left/right edge on resize — Y stays fully unclamped on every
     // screen shape, including portrait, so it can move as far up (or
@@ -606,8 +621,8 @@ async function init() {
       : params.overlayOffsetYLandscape;
     gl.uniform2f(U.uOverlayOffset, clampedOffsetX, overlayOffsetY + panY);
     gl.uniform1f(U.uOverlayScale, params.overlayScale);
-    gl.uniform1f(U.uShadingStrength, params.shadingStrength * overlayFadeMultiplier(frameNowMs));
-    gl.uniform1f(U.uOverlayShadowStrength, params.overlayShadowStrength * overlayFadeMultiplier(frameNowMs));
+    gl.uniform1f(U.uShadingStrength, overlayDegraded ? 0 : params.shadingStrength * overlayFadeMultiplier(frameNowMs));
+    gl.uniform1f(U.uOverlayShadowStrength, overlayDegraded ? 0 : params.overlayShadowStrength * overlayFadeMultiplier(frameNowMs));
     gl.uniform1f(U.uTime, now);
     gl.uniform1f(U.uMirror, mirrored ? 1.0 : 0.0);
     gl.uniform1f(U.uDistortion, params.distortion);
@@ -679,6 +694,15 @@ function wireControls() {
 const startOverlay = document.getElementById("startOverlay");
 document.getElementById("startBtn").addEventListener("click", async () => {
   startOverlay.classList.add("hidden");
+  // best-effort — iOS Safari doesn't support the Fullscreen API at all
+  // (there's no fullscreen to request there), and some browsers reject
+  // it outside very specific conditions, so this is never allowed to
+  // block or fail the rest of startup
+  try {
+    await document.documentElement.requestFullscreen();
+  } catch (e) {
+    console.error("requestFullscreen failed:", e);
+  }
   // requested FIRST, before anything else awaits — iOS only honors the
   // permission prompt when it's called directly inside the click
   // handler's own gesture, not after some other async gap (like the

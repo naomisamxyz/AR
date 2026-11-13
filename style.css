@@ -10,6 +10,12 @@ html, body {
   font-family: -apple-system, BlinkMacSystemFont, Helvetica, Arial, sans-serif;
   user-select: none;
 }
+/* the Pi kiosk is typically run with a mouse/trackpad attached for
+   setup, but the cursor has no reason to be visible once it's actually
+   showing the piece full-screen — only hidden in that state so a
+   normal windowed browser session (testing/dev) keeps its cursor */
+html:fullscreen, html:fullscreen * { cursor: none; }
+html:-webkit-full-screen, html:-webkit-full-screen * { cursor: none; }
 #camera { position: fixed; top: -9999px; left: -9999px; }
 
 #gl {

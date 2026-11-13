@@ -119,13 +119,16 @@ float snoise(vec2 v){
   return 130.0 * dot(m, g);
 }
 
-// kept to 3 octaves — this now only runs ONCE per pixel (see below),
-// so we can afford real simplex noise without it costing the frame rate
+// cut from 3 octaves to 2 — this runs on EVERY pixel unconditionally
+// (the base warp, unlike glow/line-doubling, has no on/off switch), so
+// it's the single biggest fixed per-pixel cost in the whole shader.
+// The 3rd octave only added fine high-frequency detail that's easy to
+// lose in a live camera feed anyway.
 float fbm(vec2 p){
   float v = 0.0;
   float amp = 0.5;
   mat2 rot = mat2(0.8, 0.6, -0.6, 0.8);
-  for (int i = 0; i < 3; i++) {
+  for (int i = 0; i < 2; i++) {
     v += amp * snoise(p);
     p = rot * p * 2.02;
     amp *= 0.55;
@@ -171,7 +174,7 @@ float tapTurbBoost(vec2 canvasUv, float tapT){
   float fade = exp(-tapT * 0.45);
   float tailFade = 1.0 - smoothstep(7.0, 8.0, tapT);
 
-  return ring * fade * tailFade * 1.3;
+  return ring * fade * tailFade * 2.6;
 }
 
 // underwater domain-warp displacement: two wave trains whose travel
@@ -305,8 +308,17 @@ void main(){
     vec2 offset = dir * uDouble * breathing / max(uResolution, vec2(1.0));
     offset += ghostWaves(uv);
 
-    vec3 ghost = sampleCameraAt(warpedCameraUv(uv + offset, t));
-    vec3 opposite = sampleCameraAt(warpedCameraUv(uv - offset, t));
+    // reuse the base pixel's ALREADY-COMPUTED warp displacement
+    // (warpDisp) instead of each ghost sample re-running the full
+    // noisy warp (waveOffset -> 2x fbm -> 6 snoise calls, plus
+    // tapTurbBoost again) completely independently — same trick the
+    // glow bloom taps already use below, just applied here too. This
+    // was tripling the shader's single heaviest per-pixel cost (one
+    // full noise evaluation for the base, then one each for ghost and
+    // opposite) for a difference in the water-warp that's too subtle
+    // to notice on two samples this close together anyway.
+    vec3 ghost = sampleCameraAt(plainCameraUv(uv + offset) + warpDisp);
+    vec3 opposite = sampleCameraAt(plainCameraUv(uv - offset) + warpDisp);
 
     base = rawBase * (1.0 - 2.0 * op) + (ghost + opposite) * op;
   }
