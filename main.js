@@ -29,13 +29,26 @@ const DEFAULTS = {
   // uOverlayOffset's use in fragment.glsl) — where the object sits
   // BEFORE any gyro pan is added. Negative X + positive Y is up-and-left
   // (vUv.x increases rightward, vUv.y increases UPWARD here).
-  overlayOffsetX: -0.2,
-  overlayOffsetY: 0.27,
-  overlayScale: 0.67,
+  overlayOffsetX: -0.5,
+  // separate Y offsets per screen shape — the conversion to actual
+  // on-screen uv shift (see uOverlayOffset's use in fragment.glsl)
+  // scales Y by shorterSide/height, which on its own doesn't move the
+  // object up by the same amount on a tall portrait phone as on a wide
+  // landscape screen for the same authored number, so these are tuned
+  // independently rather than sharing one value
+  overlayOffsetYPortrait: 0.6,
+  overlayOffsetYLandscape: 0.33,
+  overlayScale: 0.59,
+  // strength of the separate shading/shadow layer's darkening (see
+  // shadingVideo/uShading above and fragment.glsl) — 0 disables it
+  shadingStrength: 1.0,
+  // halo shadow sampled from the glow's own shape at a larger scale,
+  // so it reaches past the object's edges — see uOverlayShadowStrength
+  overlayShadowStrength: 0.69,
 };
 
 const KEYS = Object.keys(DEFAULTS);
-const STORAGE_KEY = "ar4_params_v1";
+const STORAGE_KEY = "ar4_params_v3";
 
 // cheap smooth pseudo-noise (sum of incommensurate sines) to drive slow,
 // organic wave-direction/turbulence drift on the CPU instead of paying
@@ -299,6 +312,22 @@ async function init() {
   }, { once: true });
   overlayVideo.load();
 
+  // a second, separate clip containing ONLY shadow/shading detail (no
+  // glow, no object color) on a black background — its own luminance
+  // is read directly as "how much to darken here" (black = none, grey
+  // = darken by that amount), multiplied into the camera image BEFORE
+  // the glow overlay is added on top. Played in lockstep with
+  // overlayVideo (see scheduleOverlayPlay/ended below); its boomerang
+  // length isn't frame-identical to overlayVideo's, so the two drift
+  // slightly within a loop cycle, but both restart together each loop
+  // so that drift never accumulates.
+  const shadingVideo = document.createElement("video");
+  shadingVideo.src = "assets/shading_layer.mp4";
+  shadingVideo.muted = true;
+  shadingVideo.playsInline = true;
+  shadingVideo.loop = false;
+  shadingVideo.load();
+
   // timeline, repeating forever: wait -> play forward+back (fading in
   // over the first second) -> fade out -> wait -> play again. All of
   // this is separate from the shader effects' own clock, which just
@@ -328,6 +357,7 @@ async function init() {
   function scheduleOverlayPlay() {
     setTimeout(() => {
       overlayVideo.currentTime = 0;
+      shadingVideo.currentTime = 0;
       overlayVideo
         .play()
         .then(() => {
@@ -336,11 +366,13 @@ async function init() {
           overlayLoopRestarted = true;
         })
         .catch((e) => console.error("overlay video play failed:", e));
+      shadingVideo.play().catch((e) => console.error("shading video play failed:", e));
     }, OVERLAY_WAIT_MS);
   }
 
   overlayVideo.addEventListener("ended", () => {
     overlayEndedAtMs = performance.now();
+    shadingVideo.pause();
     setTimeout(scheduleOverlayPlay, OVERLAY_FADE_OUT_MS);
   });
   scheduleOverlayPlay(); // first play also waits, same as every loop after it
@@ -367,6 +399,13 @@ async function init() {
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
 
+  const shadingTex = gl.createTexture();
+  gl.bindTexture(gl.TEXTURE_2D, shadingTex);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+
   const loc = (name) => gl.getUniformLocation(program, name);
   const U = {
     uCamera: loc("uCamera"),
@@ -379,6 +418,9 @@ async function init() {
     uOverlayOpacity: loc("uOverlayOpacity"),
     uOverlayOffset: loc("uOverlayOffset"),
     uOverlayScale: loc("uOverlayScale"),
+    uShading: loc("uShading"),
+    uShadingStrength: loc("uShadingStrength"),
+    uOverlayShadowStrength: loc("uOverlayShadowStrength"),
     uDistortion: loc("uDistortion"),
     uWaveSpeed: loc("uWaveSpeed"),
     uRippleScale: loc("uRippleScale"),
@@ -481,6 +523,11 @@ async function init() {
       gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGB, gl.RGB, gl.UNSIGNED_BYTE, overlayVideo);
     }
 
+    if (shadingVideo.readyState >= shadingVideo.HAVE_CURRENT_DATA) {
+      gl.bindTexture(gl.TEXTURE_2D, shadingTex);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGB, gl.RGB, gl.UNSIGNED_BYTE, shadingVideo);
+    }
+
     // re-anchor the gyro pan's "home" heading exactly once, on the
     // frame the overlay video just looped back to its start
     if (overlayLoopRestarted && latestOrientation) {
@@ -537,12 +584,27 @@ async function init() {
     gl.activeTexture(gl.TEXTURE1);
     gl.bindTexture(gl.TEXTURE_2D, overlayTex);
     gl.uniform1i(U.uOverlay, 1);
+    gl.activeTexture(gl.TEXTURE2);
+    gl.bindTexture(gl.TEXTURE_2D, shadingTex);
+    gl.uniform1i(U.uShading, 2);
     gl.uniform2f(U.uResolution, canvas.width, canvas.height);
     gl.uniform2f(U.uCameraAspectFit, fitX, fitY);
     gl.uniform2f(U.uOverlayAspectFit, ovFitX, ovFitY);
     gl.uniform1f(U.uOverlayOpacity, params.overlayOpacity * overlayFadeMultiplier(frameNowMs));
-    gl.uniform2f(U.uOverlayOffset, params.overlayOffsetX + panX, params.overlayOffsetY + panY);
+    // clamp only the X (side) offset so the object can't get pushed off
+    // the left/right edge on resize — Y stays fully unclamped on every
+    // screen shape, including portrait, so it can move as far up (or
+    // down) as the slider value pushes it, off-frame if need be.
+    const shortSidePx = Math.min(canvas.width, canvas.height);
+    const maxOffsetX = Math.max(0, (canvas.width / shortSidePx - params.overlayScale) / 2);
+    const clampedOffsetX = Math.min(Math.max(params.overlayOffsetX + panX, -maxOffsetX), maxOffsetX);
+    const overlayOffsetY = canvas.height >= canvas.width
+      ? params.overlayOffsetYPortrait
+      : params.overlayOffsetYLandscape;
+    gl.uniform2f(U.uOverlayOffset, clampedOffsetX, overlayOffsetY + panY);
     gl.uniform1f(U.uOverlayScale, params.overlayScale);
+    gl.uniform1f(U.uShadingStrength, params.shadingStrength * overlayFadeMultiplier(frameNowMs));
+    gl.uniform1f(U.uOverlayShadowStrength, params.overlayShadowStrength * overlayFadeMultiplier(frameNowMs));
     gl.uniform1f(U.uTime, now);
     gl.uniform1f(U.uMirror, mirrored ? 1.0 : 0.0);
     gl.uniform1f(U.uDistortion, params.distortion);
