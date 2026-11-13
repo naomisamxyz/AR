@@ -4,14 +4,14 @@ const DEFAULTS = {
   waveSpeed: 1.94,
   rippleScale: 1.80,
   contrast: 1.58,
-  brightness: 0.08,
+  brightness: 0.04,
   vignette: 0.44,
   grain: 0.08,
   murk: 0.43,
   saturation: 0.23,
   // line-doubling + glow, ported from AR1 (filter.frag) — values below
   // are AR1's own current defaults, carried over as-is
-  double: 0,
+  double: 7.5,
   ghostOpacity: 0.5,
   angle: 180,
   drift: 0.77,
@@ -19,11 +19,10 @@ const DEFAULTS = {
   ghostWaveAmount: 6,
   ghostWaveScale: 2,
   ghostWaveSpeed: 6.87,
-  glow: 5,
+  glow: 2.5,
   focusBlur: 1.15,
   // overlay video layer (additive glow on black, see main.js/fragment.glsl)
-  // — set to match the agreed-on slider positions
-  overlayOpacity: 0.97,
+  overlayOpacity: 0.54,
   // static authored placement, in screen-size-independent units (a
   // fraction of the shorter screen dimension, not raw canvas-uv — see
   // uOverlayOffset's use in fragment.glsl) — where the object sits
@@ -41,14 +40,14 @@ const DEFAULTS = {
   overlayScale: 0.59,
   // strength of the separate shading/shadow layer's darkening (see
   // shadingVideo/uShading above and fragment.glsl) — 0 disables it
-  shadingStrength: 1.0,
+  shadingStrength: 0.15,
   // halo shadow sampled from the glow's own shape at a larger scale,
   // so it reaches past the object's edges — see uOverlayShadowStrength
-  overlayShadowStrength: 0.69,
+  overlayShadowStrength: 0,
 };
 
 const KEYS = Object.keys(DEFAULTS);
-const STORAGE_KEY = "ar4_params_v3";
+const STORAGE_KEY = "ar4_params_v5";
 
 // cheap smooth pseudo-noise (sum of incommensurate sines) to drive slow,
 // organic wave-direction/turbulence drift on the CPU instead of paying
@@ -108,6 +107,10 @@ let mirrored = false;
 // is relative-rotation only (no compass/magnetometer, no real-world
 // anchoring) — simple and good enough for a convincing "look away and
 // back" illusion without the drift/complexity of true world tracking.
+// disabled for now — flip back to true to restore it, nothing else
+// needs to change (the permission request/listener just never attach,
+// so latestOrientation stays null and panX/panY stay 0 everywhere)
+const GYRO_ENABLED = false;
 let latestOrientation = null; // {alpha, beta} in degrees, most recent deviceorientation reading
 let panHome = null; // the orientation reading captured at the last loop restart
 const PAN_SENSITIVITY = 0.012; // canvas-uv units per degree of rotation
@@ -680,7 +683,7 @@ document.getElementById("startBtn").addEventListener("click", async () => {
   // permission prompt when it's called directly inside the click
   // handler's own gesture, not after some other async gap (like the
   // camera permission prompt) has already used it up
-  if (await requestOrientationPermission()) {
+  if (GYRO_ENABLED && await requestOrientationPermission()) {
     window.addEventListener("deviceorientation", onDeviceOrientation);
   }
   try {

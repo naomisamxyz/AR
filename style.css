@@ -1,3 +1,8 @@
+@font-face {
+  font-family: "Hypnotic13";
+  src: url("fonts/Hypnotic13-WBO-COLR.otf") format("opentype");
+}
+
 * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
 html, body {
   margin: 0; padding: 0; width: 100%; height: 100%;
@@ -16,32 +21,73 @@ html, body {
 
 #startOverlay {
   position: fixed; inset: 0;
-  display: flex; align-items: center; justify-content: center;
+  display: flex; align-items: flex-end; justify-content: center;
   background: #000;
   z-index: 50;
+  padding-bottom: calc(env(safe-area-inset-bottom, 0px) + 60px);
 }
 #startOverlay.hidden { display: none; }
-#startBtn {
+#startBtnWrap { position: relative; cursor: pointer; }
+#startBtn, #startBtnGlowWide, #startBtnGlowWidest {
   color: #fff;
-  font-size: 13px;
+  font-family: "Hypnotic13", -apple-system, BlinkMacSystemFont, Helvetica, Arial, sans-serif;
+  font-size: 36px;
   letter-spacing: 0.08em;
   text-transform: uppercase;
-  border: 1px solid #fff;
   padding: 12px 24px;
-  cursor: pointer;
+  white-space: nowrap;
+}
+#startBtn {
+  text-shadow: 0 0 8px #fff, 0 0 20px #fff;
+}
+/* two blurred DUPLICATES of the text sitting behind it — true
+   Gaussian blurs (via filter) layered at increasing radii so the glow
+   fades out gradually (diffused) instead of having one hard-edged
+   halo */
+#startBtnGlowWide {
+  position: absolute;
+  inset: 0;
+  filter: blur(90px) brightness(3);
+  opacity: 0.15;
+  pointer-events: none;
+}
+#startBtnGlowWidest {
+  position: absolute;
+  inset: 0;
+  filter: blur(200px) brightness(3);
+  opacity: 0.08;
+  pointer-events: none;
 }
 
-#gearBtn, #flipBtn {
+/* styled to match the "liquify" start button — no border/background,
+   same layered blur-glow technique (see #startBtnGlowWide/Widest) */
+.iconBtn {
   position: fixed;
   top: calc(env(safe-area-inset-top, 0px) + 12px);
   width: 36px; height: 36px;
-  border: 1px solid #fff;
-  background: #000;
+  border: none;
+  background: transparent;
   color: #fff;
-  font-size: 15px;
+  font-size: 18px;
   line-height: 1;
   display: flex; align-items: center; justify-content: center;
   z-index: 40;
+  padding: 0;
+}
+.iconBtn .iconGlyph, .iconBtn .iconGlow, .iconBtn .iconGlowWide {
+  position: absolute;
+  inset: 0;
+  display: flex; align-items: center; justify-content: center;
+}
+.iconBtn .iconGlow {
+  filter: blur(10px) brightness(3);
+  opacity: 0.4;
+  pointer-events: none;
+}
+.iconBtn .iconGlowWide {
+  filter: blur(24px) brightness(3);
+  opacity: 0.25;
+  pointer-events: none;
 }
 #gearBtn { right: 12px; }
 #flipBtn { right: 56px; }
