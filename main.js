@@ -478,7 +478,7 @@ async function init() {
   // canvas is always stretched to fill the same physical screen
   // regardless of its internal resolution, so a fixed UV fraction maps
   // to the same fraction of the final displayed image either way.
-  const RENDER_SCALE_STEPS = [0.45, 0.40, 0.35];
+  const RENDER_SCALE_STEPS = [0.45, 0.40, 0.35, 0.28, 0.22];
   let renderScaleStepIndex = 0;
 
   // FIXED reference render-target size — always the dimensions the
@@ -561,6 +561,10 @@ async function init() {
   let fitX = 1, fitY = 1, ovFitX = 1, ovFitY = 1;
   let bloomOffsetH = [0, 0], bloomOffsetV = [0, 0];
 
+  // temporary Pi-debugging readout (see index.html's #debugInfo)
+  const debugEl = document.getElementById("debugInfo");
+  let lastDebugUpdateMs = 0;
+
   // dev-only A/B comparison, untested on the Pi from here: true
   // allocates each texture's storage once (via texImage2D) and reuses
   // it on every later frame via texSubImage2D, instead of calling
@@ -615,6 +619,20 @@ async function init() {
     const effectiveGlow = perfDegradeLevel >= RENDER_SCALE_STEPS.length ? 0 : params.glow;
     const effectiveGhostOpacity = perfDegradeLevel >= RENDER_SCALE_STEPS.length + 1 ? 0 : params.ghostOpacity;
     const overlayDegraded = perfDegradeLevel >= RENDER_SCALE_STEPS.length + 2;
+
+    // temporary Pi-debugging readout — updated a few times a second
+    // (not every frame) so the DOM write itself doesn't add meaningful
+    // cost; remove debugEl/this block once performance is sorted
+    if (debugEl && frameNowMs - lastDebugUpdateMs > 500) {
+      lastDebugUpdateMs = frameNowMs;
+      const fps = avgFrameMs > 0 ? (1000 / avgFrameMs).toFixed(1) : "?";
+      debugEl.textContent =
+        `fps: ${fps}\n` +
+        `avgFrameMs: ${avgFrameMs.toFixed(1)}\n` +
+        `renderScale: ${RENDER_SCALE_STEPS[renderScaleStepIndex]} (step ${renderScaleStepIndex}/${RENDER_SCALE_STEPS.length - 1})\n` +
+        `perfDegradeLevel: ${perfDegradeLevel}/${PERF_MAX_LEVEL}\n` +
+        `canvas: ${canvas.width}x${canvas.height}`;
+    }
 
     const now = (performance.now() - startTime) / 1000 + phaseOffset;
 
