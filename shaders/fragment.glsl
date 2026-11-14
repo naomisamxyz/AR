@@ -130,18 +130,17 @@ float snoise(vec2 v){
   return 130.0 * dot(m, g);
 }
 
-// was 3 octaves, then 2; cut further to 1 (a single snoise call, no
-// loop/rotation needed) for the Pi — this runs on EVERY pixel
-// unconditionally (the base warp has no on/off switch), so it's the
-// single biggest fixed per-pixel cost in the whole shader. To restore
-// 2 octaves, change the loop bound back to "i < 2". Loses a layer of
-// cross-interference detail — the warp looks a bit more like one
-// simple noise field and less "choppy"/complex.
+// restored to the original 3 octaves — was cut to 1 for the Pi (this
+// runs on EVERY pixel unconditionally, the base warp has no on/off
+// switch, so it's the single biggest fixed per-pixel cost in the whole
+// shader), but that traded away enough cross-interference detail that
+// the warp started looking noticeably more regular/uniform. If the Pi
+// needs this cost back out again, drop the loop bound back to "i < 1".
 float fbm(vec2 p){
   float v = 0.0;
   float amp = 0.5;
   mat2 rot = mat2(0.8, 0.6, -0.6, 0.8);
-  for (int i = 0; i < 1; i++) {
+  for (int i = 0; i < 3; i++) {
     v += amp * snoise(p);
     p = rot * p * 2.02;
     amp *= 0.55;

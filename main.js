@@ -24,9 +24,9 @@ window.addEventListener("error", (e) => {
 
 // set to match the reference screenshot's slider positions
 const DEFAULTS = {
-  distortion: 1.34,
-  waveSpeed: 2.6,
-  rippleScale: 1.80,
+  distortion: 1.1,
+  waveSpeed: 3.4,
+  rippleScale: 3.8,
   contrast: 1.58,
   brightness: 0.04,
   saturation: 0.23,
@@ -234,7 +234,10 @@ async function startCamera(facing) {
   const track = stream.getVideoTracks()[0];
   const settings = track.getSettings ? track.getSettings() : {};
   cameraSettings = settings;
-  mirrored = settings.facingMode === "user" || facing === "user";
+  // the Pi's installation camera always needs to be mirrored, regardless
+  // of what facingMode it reports (there's no front/back switch there
+  // anyway — see piCameraMode hiding the flip button below)
+  mirrored = piCameraMode ? true : (settings.facingMode === "user" || facing === "user");
 }
 
 async function compileShader(gl, type, source) {
@@ -571,10 +574,6 @@ async function init() {
   let fitX = 1, fitY = 1, ovFitX = 1, ovFitY = 1;
   let bloomOffsetH = [0, 0], bloomOffsetV = [0, 0];
 
-  // temporary Pi-debugging readout (see index.html's #debugInfo)
-  const debugEl = document.getElementById("debugInfo");
-  let lastDebugUpdateMs = 0;
-
   // dev-only A/B comparison, untested on the Pi from here: true
   // allocates each texture's storage once (via texImage2D) and reuses
   // it on every later frame via texSubImage2D, instead of calling
@@ -629,21 +628,6 @@ async function init() {
     const effectiveGlow = perfDegradeLevel >= RENDER_SCALE_STEPS.length ? 0 : params.glow;
     const effectiveGhostOpacity = perfDegradeLevel >= RENDER_SCALE_STEPS.length + 1 ? 0 : params.ghostOpacity;
     const overlayDegraded = perfDegradeLevel >= RENDER_SCALE_STEPS.length + 2;
-
-    // temporary Pi-debugging readout — updated a few times a second
-    // (not every frame) so the DOM write itself doesn't add meaningful
-    // cost; remove debugEl/this block once performance is sorted
-    if (debugEl && frameNowMs - lastDebugUpdateMs > 500) {
-      lastDebugUpdateMs = frameNowMs;
-      const fps = avgFrameMs > 0 ? (1000 / avgFrameMs).toFixed(1) : "?";
-      debugEl.textContent =
-        `fps: ${fps}\n` +
-        `avgFrameMs: ${avgFrameMs.toFixed(1)}\n` +
-        `renderScale: ${RENDER_SCALE_STEPS[renderScaleStepIndex]} (step ${renderScaleStepIndex}/${RENDER_SCALE_STEPS.length - 1})\n` +
-        `perfDegradeLevel: ${perfDegradeLevel}/${PERF_MAX_LEVEL}\n` +
-        `canvas: ${canvas.width}x${canvas.height}\n` +
-        `camera: ${cameraSettings.width ?? video.videoWidth}x${cameraSettings.height ?? video.videoHeight} @ ${cameraSettings.frameRate ?? "?"}`;
-    }
 
     const now = (performance.now() - startTime) / 1000 + phaseOffset;
 
@@ -814,7 +798,14 @@ async function init() {
 // ---- UI wiring ---- (effect controls removed — tune via DEFAULTS in
 // code from now on; only the camera-flip button remains)
 function wireControls() {
-  document.getElementById("flipBtn").addEventListener("click", async () => {
+  const flipBtn = document.getElementById("flipBtn");
+  // the Pi's installation camera has no front/back to switch between,
+  // so the button is removed entirely there rather than just disabled
+  if (piCameraMode) {
+    flipBtn.remove();
+    return;
+  }
+  flipBtn.addEventListener("click", async () => {
     currentFacing = currentFacing === "environment" ? "user" : "environment";
     try {
       await startCamera(currentFacing);
