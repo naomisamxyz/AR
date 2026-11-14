@@ -96,3 +96,16 @@ html:-webkit-full-screen, html:-webkit-full-screen * { cursor: none; }
   pointer-events: none;
 }
 #flipBtn { right: 12px; }
+
+/* fully invisible — a tap target only, no fill/border/outline of any
+   kind, so there's nothing on screen to give its location away */
+#escapeBtn {
+  position: fixed;
+  top: 0; left: 0;
+  width: 70px; height: 70px;
+  border: none;
+  background: transparent;
+  padding: 0;
+  z-index: 70;
+  -webkit-tap-highlight-color: transparent;
+}

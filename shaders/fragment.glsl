@@ -54,6 +54,7 @@ uniform float uWaveSpeed;
 uniform float uRippleScale;
 uniform float uContrast;
 uniform float uBrightness;
+uniform float uShadowLift;
 uniform float uSaturation;
 
 // line-doubling + glow, ported from AR1 (filter.frag): two extra
@@ -359,8 +360,17 @@ void main(){
 
   float lum = luminance(base);
 
+  // ---- shadow lift (gamma, applied BEFORE contrast) ----
+  // a flat brightness add washes out highlights and flattens contrast
+  // everywhere equally — this instead brightens dark areas
+  // proportionally more than bright ones (gamma < 1), which is exactly
+  // what a camera feed with no direct light needs: lifted shadows
+  // without touching how the already-lit parts look. At uShadowLift=0
+  // this is pow(lum, 1.0), i.e. a no-op.
+  float liftedLum = pow(clamp(lum, 0.0, 1.0), 1.0 - uShadowLift);
+
   // ---- tonal grade (B&W) ----
-  float result = (lum - 0.5) * uContrast + 0.5 + uBrightness;
+  float result = (liftedLum - 0.5) * uContrast + 0.5 + uBrightness;
 
 
   // soft highlight knee: above a threshold, roll values off toward 1.0

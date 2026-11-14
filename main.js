@@ -26,9 +26,13 @@ window.addEventListener("error", (e) => {
 const DEFAULTS = {
   distortion: 1.1,
   waveSpeed: 3.4,
-  rippleScale: 3.8,
+  rippleScale: 1.80,
   contrast: 1.58,
   brightness: 0.04,
+  // gamma lift on shadows only (0 = no-op) — see uShadowLift in
+  // fragment.glsl for why this is gentler on the look than more
+  // brightness/contrast would be for a camera feed with no direct light
+  shadowLift: 0.12,
   saturation: 0.23,
   // line-doubling + glow, ported from AR1 (filter.frag) — values below
   // are AR1's own current defaults, carried over as-is
@@ -442,6 +446,7 @@ async function init() {
     uRippleScale: loc("uRippleScale"),
     uContrast: loc("uContrast"),
     uBrightness: loc("uBrightness"),
+    uShadowLift: loc("uShadowLift"),
     uSaturation: loc("uSaturation"),
     uTurbulence: loc("uTurbulence"),
     uWaveDirA: loc("uWaveDirA"),
@@ -773,6 +778,7 @@ async function init() {
     gl.uniform1f(U.uRippleScale, params.rippleScale);
     gl.uniform1f(U.uContrast, params.contrast);
     gl.uniform1f(U.uBrightness, params.brightness);
+    gl.uniform1f(U.uShadowLift, params.shadowLift);
     gl.uniform1f(U.uSaturation, params.saturation);
     gl.uniform1f(U.uTurbulence, turbulence);
     gl.uniform2f(U.uWaveDirA, waveDirA[0], waveDirA[1]);
@@ -798,6 +804,13 @@ async function init() {
 // ---- UI wiring ---- (effect controls removed — tune via DEFAULTS in
 // code from now on; only the camera-flip button remains)
 function wireControls() {
+  // invisible kiosk escape hatch (see #escapeBtn in index.html/style.css)
+  // — wired unconditionally, before the piCameraMode early-return below,
+  // so it's always available regardless of mode
+  document.getElementById("escapeBtn").addEventListener("click", () => {
+    if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
+  });
+
   const flipBtn = document.getElementById("flipBtn");
   // the Pi's installation camera has no front/back to switch between,
   // so the button is removed entirely there rather than just disabled
