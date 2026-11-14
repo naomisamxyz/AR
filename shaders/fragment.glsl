@@ -33,21 +33,6 @@ uniform vec2 uOverlayOffset;
 // the offset, so moving it around and resizing it stay independent
 uniform float uOverlayScale;
 
-// a separate clip containing ONLY shadow/shading detail (no glow, no
-// object color) on a black background, lined up with uOverlay using
-// the exact same aspect-fit/offset/scale. Its luminance is read
-// directly as a darkening amount — black means no shadow there, grey
-// means darken by that much — and multiplied into the camera image
-// BEFORE the glow is added, which keeps it separate from (and immune
-// to) the glow's own soft bloom falloff.
-uniform sampler2D uShading;
-uniform float uShadingStrength;
-// a halo drawn from the glow's OWN shape, sampled at a larger on-screen
-// size than the glow itself, so it reaches past the object's edges
-// into the surrounding camera image — unlike uShading (which is
-// confined to the object's own silhouette), this is what actually
-// gives the glow something to contrast against on a white background
-uniform float uOverlayShadowStrength;
 
 // slow, organic values computed once per frame on the CPU (cheap sine
 // noise, see main.js) instead of per-pixel on the GPU — these drive the
@@ -411,43 +396,6 @@ void main(){
   // object reads smaller on screen with more of the (contributes-
   // nothing) black margin visible around it, and vice versa for > 1
   vec2 ovUv = (baseOvUv - 0.5) / max(uOverlayScale, 0.001) + 0.5;
-
-  // ---- halo shadow, sampled from the glow's own shape but at a
-  // LARGER on-screen size (1.3x), so it pokes out past the glow's own
-  // edges into the surrounding camera image — this is what gives the
-  // glow something to contrast against regardless of background
-  // brightness. Subtracted (not multiplied) for the same reason as the
-  // shading layer below: a proportional darken barely shows up against
-  // an already-bright/white background. ----
-  if (uOverlayShadowStrength > 0.001) {
-    vec2 haloUv = (baseOvUv - 0.5) / max(uOverlayScale * 1.04, 0.001) + 0.5;
-    if (haloUv.x >= 0.0 && haloUv.x <= 1.0 && haloUv.y >= 0.0 && haloUv.y <= 1.0) {
-      vec3 halo = texture2D(uOverlay, vec2(haloUv.x, 1.0 - haloUv.y)).rgb;
-      vec2 haloEdgeDist = abs(haloUv - 0.5) * 2.0;
-      float haloVignette = 1.0 - smoothstep(0.7, 1.0, max(haloEdgeDist.x, haloEdgeDist.y));
-      float haloDarken = luminance(halo) * haloVignette * uOverlayShadowStrength;
-      outColor = clamp(outColor - vec3(haloDarken), 0.0, 1.0);
-    }
-  }
-
-  // ---- shading/shadow layer, darkened BEFORE the glow is added, so
-  // it's never competing with the glow's own bloom falloff for the
-  // same brightness range (that's what made the single-video replace
-  // approach show a visible box — see the shading layer's own
-  // comments above uShading) ----
-  if (ovUv.x >= 0.0 && ovUv.x <= 1.0 && ovUv.y >= 0.0 && ovUv.y <= 1.0 && uShadingStrength > 0.001) {
-    vec3 shade = texture2D(uShading, vec2(ovUv.x, 1.0 - ovUv.y)).rgb;
-    vec2 shadeEdgeDist = abs(ovUv - 0.5) * 2.0;
-    float shadeVignette = 1.0 - smoothstep(0.7, 1.0, max(shadeEdgeDist.x, shadeEdgeDist.y));
-    // subtract a fixed amount of brightness rather than scaling it
-    // proportionally — a proportional (multiply) darken barely reads
-    // against an already-bright/white camera background (80% of
-    // white is still fairly bright), while a flat subtraction removes
-    // the same amount of light regardless of what's underneath, so it
-    // stays visible on both dark and bright backgrounds alike
-    float darken = luminance(shade) * shadeVignette * uShadingStrength;
-    outColor = clamp(outColor - vec3(darken), 0.0, 1.0);
-  }
 
   if (ovUv.x >= 0.0 && ovUv.x <= 1.0 && ovUv.y >= 0.0 && ovUv.y <= 1.0) {
     vec3 ov = texture2D(uOverlay, vec2(ovUv.x, 1.0 - ovUv.y)).rgb;
