@@ -486,7 +486,9 @@ async function init() {
   // canvas is always stretched to fill the same physical screen
   // regardless of its internal resolution, so a fixed UV fraction maps
   // to the same fraction of the final displayed image either way.
-  const RENDER_SCALE_STEPS = [0.45, 0.40, 0.35, 0.28, 0.22];
+  const RENDER_SCALE_STEPS = piCameraMode
+    ? [0.45, 0.40, 0.35, 0.28]
+    : [0.45, 0.40, 0.35, 0.28, 0.22];
   let renderScaleStepIndex = 0;
 
   // FIXED reference render-target size — always the dimensions the
@@ -786,8 +788,8 @@ async function init() {
     gl.uniform1f(U.uWaveSpeed, params.waveSpeed);
     gl.uniform1f(U.uRippleScale, params.rippleScale);
     // The Pi's installation camera needs a gentler grade to retain shadow detail.
-    gl.uniform1f(U.uContrast, piCameraMode ? 1.12 : params.contrast);
-    gl.uniform1f(U.uBrightness, piCameraMode ? 0.09 : params.brightness);
+    gl.uniform1f(U.uContrast, piCameraMode ? 1.05 : params.contrast);
+    gl.uniform1f(U.uBrightness, piCameraMode ? 0.20 : params.brightness);
     gl.uniform1f(U.uSaturation, params.saturation);
     gl.uniform1f(U.uTurbulence, turbulence);
     gl.uniform2f(U.uWaveDirA, waveDirA[0], waveDirA[1]);
