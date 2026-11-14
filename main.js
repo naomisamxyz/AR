@@ -207,6 +207,9 @@ canvas.addEventListener("pointerdown", (e) => {
   triggerTap(e.clientX, e.clientY);
 });
 
+const piCameraMode = new URLSearchParams(location.search).get("pi") === "1";
+let cameraSettings = {};
+
 async function startCamera(facing) {
   if (video.srcObject) {
     video.srcObject.getTracks().forEach((t) => t.stop());
@@ -215,8 +218,14 @@ async function startCamera(facing) {
     audio: false,
     video: {
       facingMode: { ideal: facing },
-      width: { ideal: 1920 },
-      height: { ideal: 1080 },
+      ...(piCameraMode ? {
+        width: { ideal: 640, max: 640 },
+        height: { ideal: 480, max: 480 },
+        frameRate: { ideal: 30, max: 30 },
+      } : {
+        width: { ideal: 1920 },
+        height: { ideal: 1080 },
+      }),
     },
   };
   const stream = await navigator.mediaDevices.getUserMedia(constraints);
@@ -224,6 +233,7 @@ async function startCamera(facing) {
   await video.play();
   const track = stream.getVideoTracks()[0];
   const settings = track.getSettings ? track.getSettings() : {};
+  cameraSettings = settings;
   mirrored = settings.facingMode === "user" || facing === "user";
 }
 
@@ -629,7 +639,8 @@ async function init() {
         `avgFrameMs: ${avgFrameMs.toFixed(1)}\n` +
         `renderScale: ${RENDER_SCALE_STEPS[renderScaleStepIndex]} (step ${renderScaleStepIndex}/${RENDER_SCALE_STEPS.length - 1})\n` +
         `perfDegradeLevel: ${perfDegradeLevel}/${PERF_MAX_LEVEL}\n` +
-        `canvas: ${canvas.width}x${canvas.height}`;
+        `canvas: ${canvas.width}x${canvas.height}\n` +
+        `camera: ${cameraSettings.width ?? video.videoWidth}x${cameraSettings.height ?? video.videoHeight} @ ${cameraSettings.frameRate ?? "?"}`;
     }
 
     const now = (performance.now() - startTime) / 1000 + phaseOffset;
