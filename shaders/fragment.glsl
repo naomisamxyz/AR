@@ -346,6 +346,15 @@ void main(){
   float grainN = fract(sin(dot(uv * uResolution + uTime * 60.0, vec2(12.9898, 78.233))) * 43758.5453);
   result += (grainN - 0.5) * uGrain;
 
+  // soft highlight knee: above a threshold, roll values off toward 1.0
+  // asymptotically instead of hard-clamping — keeps full contrast (the
+  // black end is completely untouched, this only reshapes the top),
+  // but stops bright areas from flattening into a single "burnt out"
+  // pure white the way a hard clamp does
+  float knee = 0.45;
+  if (result > knee) {
+    result = knee + (1.0 - knee) * (1.0 - exp(-(result - knee) / (1.0 - knee)));
+  }
   result = clamp(result, 0.0, 1.0);
 
   // ---- b&w saturation: all of the grading/vignette/grain/murk above

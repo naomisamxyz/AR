@@ -11,7 +11,7 @@ const DEFAULTS = {
   saturation: 0.23,
   // line-doubling + glow, ported from AR1 (filter.frag) — values below
   // are AR1's own current defaults, carried over as-is
-  double: 7.5,
+  double: 4,
   ghostOpacity: 0.5,
   angle: 180,
   drift: 0.77,
@@ -19,7 +19,7 @@ const DEFAULTS = {
   ghostWaveAmount: 6,
   ghostWaveScale: 2,
   ghostWaveSpeed: 6.87,
-  glow: 2.5,
+  glow: 1.5,
   focusBlur: 1.15,
   // overlay video layer (additive glow on black, see main.js/fragment.glsl)
   overlayOpacity: 0.54,
