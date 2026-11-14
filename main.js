@@ -25,14 +25,14 @@ window.addEventListener("error", (e) => {
 // set to match the reference screenshot's slider positions
 const DEFAULTS = {
   distortion: 1.34,
-  waveSpeed: 1.94,
+  waveSpeed: 2.6,
   rippleScale: 1.80,
   contrast: 1.58,
   brightness: 0.04,
   saturation: 0.23,
   // line-doubling + glow, ported from AR1 (filter.frag) — values below
   // are AR1's own current defaults, carried over as-is
-  double: 4.5,
+  double: 2.5,
   ghostOpacity: 0.5,
   angle: 180,
   drift: 0.77,
@@ -787,9 +787,8 @@ async function init() {
     gl.uniform1f(U.uDistortion, params.distortion);
     gl.uniform1f(U.uWaveSpeed, params.waveSpeed);
     gl.uniform1f(U.uRippleScale, params.rippleScale);
-    // The Pi's installation camera needs a gentler grade to retain shadow detail.
-    gl.uniform1f(U.uContrast, piCameraMode ? 1.05 : params.contrast);
-    gl.uniform1f(U.uBrightness, piCameraMode ? 0.20 : params.brightness);
+    gl.uniform1f(U.uContrast, params.contrast);
+    gl.uniform1f(U.uBrightness, params.brightness);
     gl.uniform1f(U.uSaturation, params.saturation);
     gl.uniform1f(U.uTurbulence, turbulence);
     gl.uniform2f(U.uWaveDirA, waveDirA[0], waveDirA[1]);
@@ -825,10 +824,30 @@ function wireControls() {
   });
 }
 
+// ---- keep the screen from sleeping while the piece is running (the
+// Pi kiosk especially — its own display power-save/DPMS would
+// otherwise blank the screen mid-artwork). Supported in Chromium;
+// best-effort elsewhere. Wake locks are released automatically if the
+// tab is ever hidden, so it's re-requested on visibilitychange too. ----
+let wakeLock = null;
+async function requestWakeLock() {
+  try {
+    if ("wakeLock" in navigator) {
+      wakeLock = await navigator.wakeLock.request("screen");
+    }
+  } catch (e) {
+    console.error("wake lock request failed:", e);
+  }
+}
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible") requestWakeLock();
+});
+
 // ---- boot sequence gated on a user tap (camera permission + autoplay) ----
 const startOverlay = document.getElementById("startOverlay");
 document.getElementById("startBtn").addEventListener("click", async () => {
   startOverlay.classList.add("hidden");
+  requestWakeLock();
   // best-effort — iOS Safari doesn't support the Fullscreen API at all
   // (there's no fullscreen to request there), and some browsers reject
   // it outside very specific conditions, so this is never allowed to
