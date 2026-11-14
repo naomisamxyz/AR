@@ -1,3 +1,27 @@
+// On the Pi kiosk there's no devtools access, and even alert() may not
+// render in some kiosk-mode Chromium setups — so any uncaught error
+// (including inside the rAF-driven render loop, which is outside the
+// init().catch() below entirely) gets written directly onto the page
+// as plain text instead, where it's actually readable. This is purely
+// a diagnostic safety net and changes no other behavior.
+function showFatalError(msg) {
+  let el = document.getElementById("fatalError");
+  if (!el) {
+    el = document.createElement("div");
+    el.id = "fatalError";
+    el.style.cssText =
+      "position:fixed;inset:0;z-index:999;background:#000;color:#f55;" +
+      "font:13px/1.5 monospace;padding:20px;white-space:pre-wrap;" +
+      "overflow:auto;";
+    document.body.appendChild(el);
+  }
+  el.textContent = "Fatal error:\n" + msg;
+}
+window.addEventListener("error", (e) => {
+  const msg = (e.error && e.error.stack) || e.message || "Unknown error";
+  showFatalError(msg);
+});
+
 // set to match the reference screenshot's slider positions
 const DEFAULTS = {
   distortion: 1.34,
@@ -795,6 +819,7 @@ document.getElementById("startBtn").addEventListener("click", async () => {
   try {
     await startCamera(currentFacing);
   } catch (e) {
+    showFatalError("Camera access failed: " + (e.stack || e.message));
     alert("Camera access failed: " + e.message);
     startOverlay.classList.remove("hidden");
     return;
@@ -802,6 +827,7 @@ document.getElementById("startBtn").addEventListener("click", async () => {
   wireControls();
   init().catch((e) => {
     console.error(e);
+    showFatalError("Failed to start renderer: " + (e.stack || e.message));
     alert("Failed to start renderer: " + e.message);
   });
 });
