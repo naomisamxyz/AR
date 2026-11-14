@@ -6,8 +6,6 @@ const DEFAULTS = {
   contrast: 1.58,
   brightness: 0.04,
   vignette: 0.44,
-  grain: 0.08,
-  murk: 0.43,
   saturation: 0.23,
   // line-doubling + glow, ported from AR1 (filter.frag) — values below
   // are AR1's own current defaults, carried over as-is
@@ -20,7 +18,6 @@ const DEFAULTS = {
   ghostWaveScale: 2,
   ghostWaveSpeed: 6.87,
   glow: 1.5,
-  focusBlur: 1.15,
   // overlay video layer (additive glow on black, see main.js/fragment.glsl)
   overlayOpacity: 0.54,
   // static authored placement, in screen-size-independent units (a
@@ -40,9 +37,6 @@ const DEFAULTS = {
   overlayScale: 0.5,
 };
 
-const KEYS = Object.keys(DEFAULTS);
-const STORAGE_KEY = "ar4_params_v5";
-
 // cheap smooth pseudo-noise (sum of incommensurate sines) to drive slow,
 // organic wave-direction/turbulence drift on the CPU instead of paying
 // for simplex noise on the GPU for every pixel, every frame
@@ -54,22 +48,56 @@ function smoothstepJS(e0, e1, x) {
   return v * v * (3 - 2 * v);
 }
 
-function loadParams() {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return { ...DEFAULTS };
-    const parsed = JSON.parse(raw);
-    return { ...DEFAULTS, ...parsed };
-  } catch (e) {
-    return { ...DEFAULTS };
+// Uploads a video element's current frame to a texture only when a new
+// frame has actually arrived, instead of unconditionally re-uploading
+// every requestAnimationFrame tick — rAF can run faster than the
+// video's own frame rate, so most of those re-uploads would just be
+// the same pixels again. The shader's own animation (distortion, time
+// uniform, etc.) keeps running every rAF regardless; only the
+// texImage2D upload itself is skipped. Uses requestVideoFrameCallback
+// where supported (fires exactly once per decoded frame); falls back
+// to comparing currentTime on a plain poll() call everywhere else.
+// Camera switches and loop restarts both just look like "a new/changed
+// frame arrived" to this, so they need no special-casing — and once a
+// video pauses (e.g. the overlay's "ended" event), nothing marks it
+// dirty again, which is exactly what keeps the last uploaded frame
+// showing through its fade-out instead of going blank.
+function createFrameWatcher(videoEl) {
+  let dirty = true; // always upload the first available frame
+  if (typeof videoEl.requestVideoFrameCallback === "function") {
+    const onFrame = () => {
+      dirty = true;
+      videoEl.requestVideoFrameCallback(onFrame);
+    };
+    videoEl.requestVideoFrameCallback(onFrame);
+    return {
+      poll() {},
+      consume() {
+        if (!dirty) return false;
+        dirty = false;
+        return true;
+      },
+    };
   }
+  let lastTime = -1;
+  return {
+    poll() {
+      if (videoEl.currentTime !== lastTime) {
+        lastTime = videoEl.currentTime;
+        dirty = true;
+      }
+    },
+    consume() {
+      if (!dirty) return false;
+      dirty = false;
+      return true;
+    },
+  };
 }
 
-function saveParams(p) {
-  try { localStorage.setItem(STORAGE_KEY, JSON.stringify(p)); } catch (e) {}
-}
-
-let params = loadParams();
+// no more UI to change these at runtime — tune by editing DEFAULTS
+// above directly and reloading, instead of via sliders + localStorage
+const params = DEFAULTS;
 
 const canvas = document.getElementById("gl");
 const video = document.getElementById("camera");
@@ -209,60 +237,28 @@ async function linkProgram(gl, vsSrc, fsSrc) {
   return program;
 }
 
-// ---- focus-breathing blur, ported from the AR reference project: an
-// asymmetric cycle (dwell sharp, snap to blurry, dwell blurry, ease back
-// to sharp) that itself randomly switches between "cycling" and "locked
-// sharp" for random stretches, so zero blur dominates overall while the
-// blurry moments never feel metronomic ----
-let focusMode = "locked";
-let focusSpeed = 1.4;
-let focusPhase = 0;
-let focusModeEnd = 2 + Math.random() * 4;
-let blurElapsed = 0;
-let lastFrameMs = null;
-
-function updateFocusBlur(maxBlurPx) {
-  const nowMs = performance.now();
-  const delta = lastFrameMs == null ? 0 : Math.min((nowMs - lastFrameMs) / 1000, 0.1);
-  lastFrameMs = nowMs;
-  blurElapsed += delta;
-
-  if (blurElapsed >= focusModeEnd) {
-    focusMode = focusMode === "cycle" ? "locked" : "cycle";
-    if (focusMode === "cycle") {
-      focusSpeed = 0.6 + Math.random() * 0.9;
-      focusPhase = 0;
-      // one short blip, not a sustained wobble
-      focusModeEnd = blurElapsed + 1.0 + Math.random() * 1.4;
-    } else {
-      // sharp/no-blur dominates heavily — long rests between blips
-      focusModeEnd = blurElapsed + 9 + Math.random() * 16;
-    }
-  }
-
-  if (focusMode === "cycle") focusPhase += focusSpeed * delta;
-  const cyclePos = (focusPhase / (2 * Math.PI)) % 1;
-  const sharpDwell = 0.4, riseWidth = 0.05, blurDwell = 0.08;
-  const fallStart = sharpDwell + riseWidth + blurDwell;
-  let norm;
-  if (cyclePos < sharpDwell) norm = 0;
-  else if (cyclePos < sharpDwell + riseWidth) norm = (cyclePos - sharpDwell) / riseWidth;
-  else if (cyclePos < fallStart) norm = 1;
-  else {
-    const t = (cyclePos - fallStart) / (1 - fallStart);
-    norm = 1 - (3 * t * t - 2 * t * t * t);
-  }
-  const blur = focusMode === "locked" ? 0 : norm * maxBlurPx;
-  canvas.style.filter = blur > 0.01 ? `blur(${blur.toFixed(2)}px)` : "";
-}
+// dev-only A/B comparison: true swaps the glow ring to two opposing
+// samples instead of four (half the texture reads, more directional/
+// less round halo) — see GLOW_TWO_TAP in fragment.glsl. Four-sample
+// stays the shipped default; flip this on only to compare.
+const GLOW_TWO_TAP_TEST = false;
 
 async function init() {
   const [vsSrc, fsSrc] = await Promise.all([
     fetchText("shaders/vertex.glsl"),
     fetchText("shaders/fragment.glsl"),
   ]);
+  const fsSrcFinal = GLOW_TWO_TAP_TEST ? "#define GLOW_TWO_TAP\n" + fsSrc : fsSrc;
 
-  const program = await linkProgram(gl, vsSrc, fsSrc);
+  const program = await linkProgram(gl, vsSrc, fsSrcFinal);
+  // none of this ever changes frame to frame — there's only ever one
+  // program and one VAO in use, uCamera/uOverlay always sample from
+  // texture units 0/1, and there's only ever the default framebuffer
+  // (this never renders to an offscreen target) — so it's all set up
+  // once here instead of being redundantly re-issued to the GL driver
+  // on every single frame
+  gl.useProgram(program);
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
 
   const quad = new Float32Array([-1, -1, 3, -1, -1, 3]);
   const vao = vaoExt.createVertexArrayOES();
@@ -273,7 +269,13 @@ async function init() {
   gl.enableVertexAttribArray(0);
   gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
 
+  // bound to texture unit 0 for the program's whole lifetime — nothing
+  // else ever touches unit 0, so this never needs re-binding in the
+  // draw call below, only when actually uploading a new frame (see
+  // camFrameWatcher.consume() further down, which explicitly sets
+  // activeTexture(0) again before its bind for exactly this reason)
   const tex = gl.createTexture();
+  gl.activeTexture(gl.TEXTURE0);
   gl.bindTexture(gl.TEXTURE_2D, tex);
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
@@ -309,6 +311,9 @@ async function init() {
   }, { once: true });
   overlayVideo.load();
 
+  const camFrameWatcher = createFrameWatcher(video);
+  const overlayFrameWatcher = createFrameWatcher(overlayVideo);
+
   // timeline, repeating forever: wait -> play forward+back (fading in
   // over the first second) -> fade out -> wait -> play again. All of
   // this is separate from the shader effects' own clock, which just
@@ -337,7 +342,7 @@ async function init() {
   // current view" exactly
   let overlayLoopRestarted = false;
 
-  function scheduleOverlayPlay() {
+  function scheduleOverlayPlay(waitMs) {
     setTimeout(() => {
       overlayVideo.currentTime = 0;
       overlayVideo
@@ -348,14 +353,17 @@ async function init() {
           overlayLoopRestarted = true;
         })
         .catch((e) => console.error("overlay video play failed:", e));
-    }, randomOverlayWaitMs());
+    }, waitMs != null ? waitMs : randomOverlayWaitMs());
   }
 
   overlayVideo.addEventListener("ended", () => {
     overlayEndedAtMs = performance.now();
-    setTimeout(scheduleOverlayPlay, OVERLAY_FADE_OUT_MS);
+    setTimeout(() => scheduleOverlayPlay(), OVERLAY_FADE_OUT_MS);
   });
-  scheduleOverlayPlay(); // first play also waits, same as every loop after it
+  // shorter, fixed wait just for the very first play on page load —
+  // every loop after this one goes back to the normal random 5-15s wait
+  const FIRST_OVERLAY_WAIT_MS = 5000;
+  scheduleOverlayPlay(FIRST_OVERLAY_WAIT_MS);
 
   // 0 before anything has ever played, ramps 0->1 over the first second
   // of each playback, stays at 1 until the clip ends, then ramps back
@@ -372,7 +380,9 @@ async function init() {
     return 0;
   }
 
+  // same deal as `tex` above, but on unit 1
   const overlayTex = gl.createTexture();
+  gl.activeTexture(gl.TEXTURE1);
   gl.bindTexture(gl.TEXTURE_2D, overlayTex);
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
@@ -397,47 +407,87 @@ async function init() {
     uContrast: loc("uContrast"),
     uBrightness: loc("uBrightness"),
     uVignette: loc("uVignette"),
-    uGrain: loc("uGrain"),
-    uMurk: loc("uMurk"),
     uSaturation: loc("uSaturation"),
     uTurbulence: loc("uTurbulence"),
-    uAngleA: loc("uAngleA"),
-    uAngleB: loc("uAngleB"),
-    uDouble: loc("uDouble"),
+    uWaveDirA: loc("uWaveDirA"),
+    uWaveDirB: loc("uWaveDirB"),
+    uWarpRot: loc("uWarpRot"),
+    uGhostBaseOffset: loc("uGhostBaseOffset"),
+    uRefResolution: loc("uRefResolution"),
     uGhostOpacity: loc("uGhostOpacity"),
-    uAngle: loc("uAngle"),
-    uDrift: loc("uDrift"),
-    uGhostSpeed: loc("uGhostSpeed"),
     uGhostWaveAmount: loc("uGhostWaveAmount"),
     uGhostWaveScale: loc("uGhostWaveScale"),
     uGhostWaveSpeed: loc("uGhostWaveSpeed"),
     uGlow: loc("uGlow"),
+    uBloomOffsetH: loc("uBloomOffsetH"),
+    uBloomOffsetV: loc("uBloomOffsetV"),
     uTapPos: loc("uTapPos"),
     uTapTime: loc("uTapTime"),
   };
+  // fixed for the program's whole lifetime — set once instead of every
+  // frame (the program is already current from the gl.useProgram(program)
+  // call right after linking above)
+  gl.uniform1i(U.uCamera, 0);
+  gl.uniform1i(U.uOverlay, 1);
 
   // the shader is no longer the single cheap pass it was when
-  // RENDER_SCALE=1 was first justified — line-doubling, the 6-direction
-  // glow bloom (3-tap luminance average per direction = 18 extra
-  // samples), the domain-warp noise, and the overlay/shading/halo
-  // compositing have all stacked up since. Rendering at full native
-  // resolution times device pixel ratio makes this fill-rate-bound on
-  // weak GPUs (the Raspberry Pi 3 kiosk especially) — this scales the
-  // actual render target down and lets the GPU/compositor upscale the
-  // canvas back up to fill the screen via CSS, which is far cheaper
-  // than running the full per-pixel cost at every physical pixel.
-  // was 0.65 — dropped further for the Pi. Change back to 0.65 (or 1)
-  // to restore the sharper render.
-  const RENDER_SCALE = 0.45;
+  // RENDER_SCALE=1 was first justified — line-doubling, the glow
+  // bloom, the domain-warp noise, and the overlay compositing have all
+  // stacked up since. Rendering at full native resolution times device
+  // pixel ratio makes this fill-rate-bound on weak GPUs (the Raspberry
+  // Pi 3 kiosk especially) — this scales the actual render target down
+  // and lets the GPU/compositor upscale the canvas back up to fill the
+  // screen via CSS (still 100vw/100vh — the page itself stays
+  // fullscreen at whatever the real display resolution is, e.g. the
+  // Pi's 800x480 touchscreen; only the WebGL render TARGET shrinks),
+  // which is far cheaper than running the full per-pixel cost at every
+  // physical pixel.
+  //
+  // The watchdog below (see perfDegradeLevel) now tries these steps,
+  // in order, BEFORE touching glow/line-doubling/the overlay — a
+  // softer render still has the full look (nothing visually disabled),
+  // and recovering back up is just as cheap, so it's tried first.
+  // uDouble's offset and the glow radius are both already expressed as
+  // a UV fraction of the canvas (divided by uResolution in the
+  // shader), which is why the apparent on-screen width of the doubled
+  // lines and the glow stays the same across all of these steps — the
+  // canvas is always stretched to fill the same physical screen
+  // regardless of its internal resolution, so a fixed UV fraction maps
+  // to the same fraction of the final displayed image either way.
+  const RENDER_SCALE_STEPS = [0.45, 0.40, 0.35];
+  let renderScaleStepIndex = 0;
+
+  // FIXED reference render-target size — always the dimensions the
+  // 0.45 (un-degraded) scale step would produce at the current window
+  // size, regardless of which step is actually active right now. Any
+  // "pixel-sized" effect magnitude (the ghost offset, the glow radius,
+  // ghostWaves' jitter amount) is computed against THIS instead of the
+  // live canvas.width/height — otherwise, since the canvas is always
+  // CSS-stretched to the same physical screen size no matter its
+  // internal resolution, dividing by a SMALLER live resolution (as the
+  // watchdog drops scale) would make those offsets cover a LARGER
+  // fraction of the screen, growing the apparent width of the doubled
+  // lines and the glow exactly when the watchdog is trying to make
+  // things cheaper, not bigger. Only updates when the window itself
+  // resizes, not when the watchdog changes steps.
+  let refWidth = 1, refHeight = 1;
+  function updateRefDims() {
+    const dpr = window.devicePixelRatio || 1;
+    refWidth = Math.max(1, Math.floor(window.innerWidth * dpr * RENDER_SCALE_STEPS[0]));
+    refHeight = Math.max(1, Math.floor(window.innerHeight * dpr * RENDER_SCALE_STEPS[0]));
+  }
+
   function resize() {
     const dpr = window.devicePixelRatio || 1;
-    const w = Math.floor(window.innerWidth * dpr * RENDER_SCALE);
-    const h = Math.floor(window.innerHeight * dpr * RENDER_SCALE);
+    const scale = RENDER_SCALE_STEPS[renderScaleStepIndex];
+    const w = Math.floor(window.innerWidth * dpr * scale);
+    const h = Math.floor(window.innerHeight * dpr * scale);
     if (canvas.width !== w || canvas.height !== h) {
       canvas.width = w;
       canvas.height = h;
     }
     gl.viewport(0, 0, canvas.width, canvas.height);
+    updateRefDims();
   }
   window.addEventListener("resize", resize);
   resize();
@@ -465,16 +515,54 @@ async function init() {
   // comes back up.
   let avgFrameMs = 16.7;
   let lastFrameTimeMs = null;
-  // 0 = everything on, 1 = glow off, 2 = glow + line-doubling off,
-  // 3 = also the overlay video layer off, which additionally skips its
-  // per-frame video texture upload below — that texImage2D call isn't
-  // free either, so this is worth having as a last resort on something
-  // as weak as the Pi 3
+  // 0-2 = render scale steps (0.45 -> 0.40 -> 0.35, see
+  // RENDER_SCALE_STEPS above) — tried FIRST since they keep the full
+  // look (nothing visually disabled) just at a softer resolution.
+  // 3 = glow off, 4 = also line-doubling off, 5 = also the overlay
+  // video layer off (which additionally skips its per-frame video
+  // texture upload — that texImage2D call isn't free either). Each
+  // step recovers automatically, in reverse order, once the framerate
+  // comes back up.
   let perfDegradeLevel = 0;
   let lastDegradeChangeMs = 0;
   const PERF_BAD_MS = 45; // sustained average below ~22fps -> degrade further
   const PERF_GOOD_MS = 28; // sustained average above ~35fps -> recover a step
   const PERF_COOLDOWN_MS = 3000; // minimum time between degrade/recover steps
+  const PERF_MAX_LEVEL = RENDER_SCALE_STEPS.length - 1 + 3; // render-scale steps + glow/lines/overlay
+
+  // cached across frames — see the fitKey check inside frame() below;
+  // these only get recomputed when canvas size, camera/overlay aspect,
+  // or mirroring actually changes, not on every single frame
+  let lastFitKey = null;
+  let fitX = 1, fitY = 1, ovFitX = 1, ovFitY = 1;
+  let bloomOffsetH = [0, 0], bloomOffsetV = [0, 0];
+
+  // dev-only A/B comparison, untested on the Pi from here: true
+  // allocates each texture's storage once (via texImage2D) and reuses
+  // it on every later frame via texSubImage2D, instead of calling
+  // texImage2D (which can internally reallocate) on every upload.
+  // Whichever call is actually faster depends on the GPU driver, which
+  // I can't benchmark without the real hardware — texImage2D stays the
+  // default/baseline until you've confirmed sub-image is actually
+  // faster on the Pi itself.
+  const USE_TEX_SUBIMAGE = false;
+  const uploadDims = { cam: null, overlay: null }; // {w,h} of whatever's currently allocated in each texture, or null before the first upload
+  function uploadVideoFrame(videoEl, key) {
+    if (!USE_TEX_SUBIMAGE) {
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGB, gl.RGB, gl.UNSIGNED_BYTE, videoEl);
+      return;
+    }
+    const w = videoEl.videoWidth, h = videoEl.videoHeight;
+    const allocated = uploadDims[key];
+    if (!allocated || allocated.w !== w || allocated.h !== h) {
+      // first frame, or the source changed size (e.g. a camera switch
+      // to a different resolution) — (re)allocate storage
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGB, gl.RGB, gl.UNSIGNED_BYTE, videoEl);
+      uploadDims[key] = { w, h };
+    } else {
+      gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, gl.RGB, gl.UNSIGNED_BYTE, videoEl);
+    }
+  }
 
   function frame() {
     requestAnimationFrame(frame);
@@ -487,7 +575,7 @@ async function init() {
     }
     lastFrameTimeMs = frameNowMs;
     if (frameNowMs - lastDegradeChangeMs > PERF_COOLDOWN_MS) {
-      if (avgFrameMs > PERF_BAD_MS && perfDegradeLevel < 3) {
+      if (avgFrameMs > PERF_BAD_MS && perfDegradeLevel < PERF_MAX_LEVEL) {
         perfDegradeLevel++;
         lastDegradeChangeMs = frameNowMs;
       } else if (avgFrameMs < PERF_GOOD_MS && perfDegradeLevel > 0) {
@@ -495,18 +583,34 @@ async function init() {
         lastDegradeChangeMs = frameNowMs;
       }
     }
-    const effectiveGlow = perfDegradeLevel >= 1 ? 0 : params.glow;
-    const overlayDegraded = perfDegradeLevel >= 3;
-    const effectiveGhostOpacity = perfDegradeLevel >= 2 ? 0 : params.ghostOpacity;
+    const newRenderScaleStepIndex = Math.min(perfDegradeLevel, RENDER_SCALE_STEPS.length - 1);
+    if (newRenderScaleStepIndex !== renderScaleStepIndex) {
+      renderScaleStepIndex = newRenderScaleStepIndex;
+      resize();
+    }
+    const effectiveGlow = perfDegradeLevel >= RENDER_SCALE_STEPS.length ? 0 : params.glow;
+    const effectiveGhostOpacity = perfDegradeLevel >= RENDER_SCALE_STEPS.length + 1 ? 0 : params.ghostOpacity;
+    const overlayDegraded = perfDegradeLevel >= RENDER_SCALE_STEPS.length + 2;
 
     const now = (performance.now() - startTime) / 1000 + phaseOffset;
 
-    gl.bindTexture(gl.TEXTURE_2D, tex);
-    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGB, gl.RGB, gl.UNSIGNED_BYTE, video);
+    camFrameWatcher.poll();
+    overlayFrameWatcher.poll();
 
-    if (!overlayDegraded && overlayVideo.readyState >= overlayVideo.HAVE_CURRENT_DATA) {
+    if (camFrameWatcher.consume()) {
+      // activeTexture set explicitly here (not left to whatever the
+      // previous frame's draw call left it on) so unit 0 always holds
+      // `tex` afterward, and the per-frame draw call below never has
+      // to re-bind it itself
+      gl.activeTexture(gl.TEXTURE0);
+      gl.bindTexture(gl.TEXTURE_2D, tex);
+      uploadVideoFrame(video, "cam");
+    }
+
+    if (!overlayDegraded && overlayVideo.readyState >= overlayVideo.HAVE_CURRENT_DATA && overlayFrameWatcher.consume()) {
+      gl.activeTexture(gl.TEXTURE1);
       gl.bindTexture(gl.TEXTURE_2D, overlayTex);
-      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGB, gl.RGB, gl.UNSIGNED_BYTE, overlayVideo);
+      uploadVideoFrame(overlayVideo, "overlay");
     }
 
     // re-anchor the gyro pan's "home" heading exactly once, on the
@@ -527,20 +631,42 @@ async function init() {
       panY = -pitchDelta * PAN_SENSITIVITY;
     }
 
-    const screenAspect = canvas.width / canvas.height;
-    const camAspect = video.videoWidth / video.videoHeight;
-    let fitX = 1, fitY = 1;
-    if (screenAspect > camAspect) {
-      fitY = camAspect / screenAspect;
-    } else {
-      fitX = screenAspect / camAspect;
-    }
+    // fitX/fitY/ovFitX/ovFitY/bloomOffsetH/V all depend only on canvas
+    // size, camera/overlay aspect, and mirroring — NONE of them depend
+    // on time — so they're only actually recomputed when one of those
+    // changes, instead of redoing the same arithmetic (and re-deriving
+    // bloomOffsetH/V from it) on every single frame regardless.
+    const fitKey = canvas.width + "x" + canvas.height + ":" + video.videoWidth + "x" + video.videoHeight
+      + ":" + overlayAspect + ":" + mirrored;
+    if (fitKey !== lastFitKey) {
+      lastFitKey = fitKey;
+      const screenAspect = canvas.width / canvas.height;
+      const camAspect = video.videoWidth / video.videoHeight;
+      fitX = 1; fitY = 1;
+      if (screenAspect > camAspect) {
+        fitY = camAspect / screenAspect;
+      } else {
+        fitX = screenAspect / camAspect;
+      }
 
-    let ovFitX = 1, ovFitY = 1;
-    if (screenAspect > overlayAspect) {
-      ovFitY = overlayAspect / screenAspect;
-    } else {
-      ovFitX = screenAspect / overlayAspect;
+      ovFitX = 1; ovFitY = 1;
+      if (screenAspect > overlayAspect) {
+        ovFitY = overlayAspect / screenAspect;
+      } else {
+        ovFitX = screenAspect / overlayAspect;
+      }
+
+      // precomputed glow bloom tap offsets — see bloomTapOffset()/
+      // uBloomOffsetH/V in fragment.glsl for why this used to be
+      // redone on the GPU for every one of the 4 taps. Divided by the
+      // FIXED reference resolution (see refWidth/refHeight above), not
+      // the live canvas size, for the same reason uGhostBaseOffset and
+      // ghostWaves() are below — otherwise the glow's apparent radius
+      // would grow every time the watchdog dropped the render scale.
+      const bloomRadius = 10 / Math.min(refWidth, refHeight);
+      const mirrorSign = mirrored ? -1 : 1;
+      bloomOffsetH = [bloomRadius * fitX * mirrorSign, 0];
+      bloomOffsetV = [0, bloomRadius * fitY];
     }
 
     const turbRaw = pnoise(now * 0.035 + 9.17);
@@ -550,21 +676,43 @@ async function init() {
     const angleA = now * 0.11 + pnoise(now * 0.02 + 0.5) * 3.14159;
     const angleB = angleA * 1.37 + 2.4 + pnoise(now * 0.017 + 4.0) * 2.0;
 
-    updateFocusBlur(params.focusBlur);
+    // angleA/angleB are the SAME for every pixel this frame, so the
+    // trig the shader used to redo per-pixel (cos/sin of each, plus
+    // cos/sin of angleA*0.4 for the ripple-noise rotation) is done
+    // once here instead — see uWaveDirA/B/uWarpRot in fragment.glsl
+    const waveDirA = [Math.cos(angleA), Math.sin(angleA)];
+    const waveDirB = [Math.cos(angleB), Math.sin(angleB)];
+    const rotAngle = angleA * 0.4;
+    const rotC = Math.cos(rotAngle), rotS = Math.sin(rotAngle);
+    // same (c,-s,s,c) column layout the shader's old rot2() built
+    const warpRot = [rotC, -rotS, rotS, rotC];
+
+    // the whole line-doubling base offset (direction + amount +
+    // breathing) has no uv in it anywhere, but DOES depend on time
+    // (breathing), so unlike fitX/bloomOffsetH/V above this can't be
+    // cached — it's still computed once per frame instead of once per
+    // pixel, which is the part that actually mattered. Divided by the
+    // FIXED reference resolution (not canvas.width/height) so its
+    // apparent on-screen width doesn't grow as the watchdog drops the
+    // live render scale — see refWidth/refHeight above.
+    const ghostAngleRad = (params.angle * Math.PI) / 180;
+    const ghostBreathing = 1.0 + params.drift * Math.sin(now * params.ghostSpeed * 0.6);
+    const ghostBaseOffset = [
+      Math.cos(ghostAngleRad) * params.double * ghostBreathing / refWidth,
+      Math.sin(ghostAngleRad) * params.double * ghostBreathing / refHeight,
+    ];
 
     // ---- the only shader draw this frame: straight to the screen,
     // single pass, single render target — the line-doubling/ghost
     // overlay is just two extra same-frame samples of the live camera,
-    // computed inside this same draw (see shaders/fragment.glsl) ----
-    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
-    gl.viewport(0, 0, canvas.width, canvas.height);
-    gl.useProgram(program);
-    gl.activeTexture(gl.TEXTURE0);
-    gl.bindTexture(gl.TEXTURE_2D, tex);
-    gl.uniform1i(U.uCamera, 0);
-    gl.activeTexture(gl.TEXTURE1);
-    gl.bindTexture(gl.TEXTURE_2D, overlayTex);
-    gl.uniform1i(U.uOverlay, 1);
+    // computed inside this same draw (see shaders/fragment.glsl).
+    // Framebuffer binding, viewport, and the two texture units are all
+    // ALREADY correct at this point — framebuffer is set once at setup
+    // below (never changes, there's only ever the default framebuffer),
+    // viewport is set by resize() whenever canvas size actually
+    // changes, and units 0/1 are only ever touched by the upload step
+    // above (which explicitly re-binds them when it uploads) — so none
+    // of that needs re-issuing to the GL driver on every draw call. ----
     gl.uniform2f(U.uResolution, canvas.width, canvas.height);
     gl.uniform2f(U.uCameraAspectFit, fitX, fitY);
     gl.uniform2f(U.uOverlayAspectFit, ovFitX, ovFitY);
@@ -589,55 +737,31 @@ async function init() {
     gl.uniform1f(U.uContrast, params.contrast);
     gl.uniform1f(U.uBrightness, params.brightness);
     gl.uniform1f(U.uVignette, params.vignette);
-    gl.uniform1f(U.uGrain, params.grain);
-    gl.uniform1f(U.uMurk, params.murk);
     gl.uniform1f(U.uSaturation, params.saturation);
     gl.uniform1f(U.uTurbulence, turbulence);
-    gl.uniform1f(U.uAngleA, angleA);
-    gl.uniform1f(U.uAngleB, angleB);
-    gl.uniform1f(U.uDouble, params.double);
+    gl.uniform2f(U.uWaveDirA, waveDirA[0], waveDirA[1]);
+    gl.uniform2f(U.uWaveDirB, waveDirB[0], waveDirB[1]);
+    gl.uniform4f(U.uWarpRot, warpRot[0], warpRot[1], warpRot[2], warpRot[3]);
+    gl.uniform2f(U.uGhostBaseOffset, ghostBaseOffset[0], ghostBaseOffset[1]);
+    gl.uniform2f(U.uRefResolution, refWidth, refHeight);
     gl.uniform1f(U.uGhostOpacity, effectiveGhostOpacity);
-    gl.uniform1f(U.uAngle, params.angle);
-    gl.uniform1f(U.uDrift, params.drift);
-    gl.uniform1f(U.uGhostSpeed, params.ghostSpeed);
     gl.uniform1f(U.uGhostWaveAmount, params.ghostWaveAmount);
     gl.uniform1f(U.uGhostWaveScale, params.ghostWaveScale);
     gl.uniform1f(U.uGhostWaveSpeed, params.ghostWaveSpeed);
     gl.uniform1f(U.uGlow, effectiveGlow);
+    gl.uniform2f(U.uBloomOffsetH, bloomOffsetH[0], bloomOffsetH[1]);
+    gl.uniform2f(U.uBloomOffsetV, bloomOffsetV[0], bloomOffsetV[1]);
     gl.uniform2f(U.uTapPos, tapPos.x, tapPos.y);
     gl.uniform1f(U.uTapTime, tapAtMs === -Infinity ? -1.0 : (performance.now() - tapAtMs) / 1000);
-    vaoExt.bindVertexArrayOES(vao);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
   }
 
   requestAnimationFrame(frame);
 }
 
-// ---- UI wiring ----
+// ---- UI wiring ---- (effect controls removed — tune via DEFAULTS in
+// code from now on; only the camera-flip button remains)
 function wireControls() {
-  for (const key of KEYS) {
-    const el = document.getElementById("p_" + key);
-    if (!el) continue;
-    el.value = params[key];
-    el.addEventListener("input", () => {
-      params[key] = parseFloat(el.value);
-      saveParams(params);
-    });
-  }
-
-  document.getElementById("resetBtn").addEventListener("click", () => {
-    params = { ...DEFAULTS };
-    saveParams(params);
-    for (const key of KEYS) {
-      const el = document.getElementById("p_" + key);
-      if (el) el.value = params[key];
-    }
-  });
-
-  const panel = document.getElementById("panel");
-  const gearBtn = document.getElementById("gearBtn");
-  gearBtn.addEventListener("click", () => panel.classList.toggle("open"));
-
   document.getElementById("flipBtn").addEventListener("click", async () => {
     currentFacing = currentFacing === "environment" ? "user" : "environment";
     try {

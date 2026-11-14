@@ -37,10 +37,17 @@ uniform float uOverlayScale;
 // slow, organic values computed once per frame on the CPU (cheap sine
 // noise, see main.js) instead of per-pixel on the GPU — these drive the
 // wave travel direction and overall choppiness so the pattern wanders
-// and cross-interferes instead of looking like one repeating ripple
+// and cross-interferes instead of looking like one repeating ripple.
+// uWaveDirA/uWaveDirB/uWarpRot are the unit direction vectors and
+// rotation matrix that waveOffset() used to recompute every pixel via
+// cos()/sin() of uAngleA/uAngleB — those angles are the SAME for every
+// pixel in a frame, so main.js now does the trig once per frame on the
+// CPU and uploads the result directly, instead of every fragment
+// redoing identical cos/sin work.
 uniform float uTurbulence;
-uniform float uAngleA;
-uniform float uAngleB;
+uniform vec2 uWaveDirA; // (cos(angleA), sin(angleA))
+uniform vec2 uWaveDirB; // (cos(angleB), sin(angleB))
+uniform vec4 uWarpRot;  // rot2(angleA*0.4) as (c,-s,s,c), same column layout rot2() used
 
 uniform float uDistortion;
 uniform float uWaveSpeed;
@@ -48,24 +55,44 @@ uniform float uRippleScale;
 uniform float uContrast;
 uniform float uBrightness;
 uniform float uVignette;
-uniform float uGrain;
-uniform float uMurk;
 uniform float uSaturation;
 
 // line-doubling + glow, ported from AR1 (filter.frag): two extra
 // same-frame samples of the live camera offset in opposite directions
 // (base*(1-2*op) + (ghost+opposite)*op — no history buffer, so it can't
-// accumulate/"burn in"), plus an 8-direction bloom ring kept only where
-// bright
-uniform float uDouble;
+// accumulate/"burn in"), plus a bloom ring kept only where bright.
+// uGhostBaseOffset replaces uDouble/uAngle/uDrift/uGhostSpeed: the
+// offset direction, breathing, and division by resolution were all
+// frame-invariant (no uv in them at all), so main.js now computes the
+// whole base offset vector once per frame and uploads it directly —
+// only ghostWaves() below still needs its own per-pixel uv-dependent
+// uniforms, since it genuinely varies across the screen.
+uniform vec2 uGhostBaseOffset;
 uniform float uGhostOpacity;
-uniform float uAngle;
-uniform float uDrift;
-uniform float uGhostSpeed;
 uniform float uGhostWaveAmount;
 uniform float uGhostWaveScale;
 uniform float uGhostWaveSpeed;
 uniform float uGlow;
+// a FIXED reference render-target size (main.js's RENDER_SCALE_STEPS[0]
+// baseline, i.e. the un-degraded 0.45 scale) — used only to convert
+// ghostWaves()'s "pixel-sized" wave amount into a UV fraction. Using
+// the ACTUAL current uResolution for that divide (as this used to)
+// meant the apparent on-screen size of that jitter would grow every
+// time the performance watchdog dropped the render scale, since the
+// same uGhostWaveAmount divided by a SMALLER live resolution produces
+// a LARGER UV fraction — and the canvas is always stretched via CSS to
+// the same physical screen size regardless of its internal resolution,
+// so a bigger UV fraction directly means a bigger apparent size. uBloomOffsetH/V
+// and uGhostBaseOffset avoid this same trap by being computed in JS
+// against this same fixed reference instead of the live canvas size.
+uniform vec2 uRefResolution;
+// precomputed camera-space bloom tap offsets (see uBloomOffsetH/V in
+// main.js) — recomputed in JS whenever viewport size, camera fit, or
+// mirroring changes, instead of every bloom tap redoing the same
+// cover-fit + mirror transform on the GPU for a result that's
+// identical across the whole frame
+uniform vec2 uBloomOffsetH;
+uniform vec2 uBloomOffsetV;
 
 // tap/click interactivity, ported from AR2-dev: canvas-space tap
 // position and seconds since the tap (negative = no active tap) —
@@ -123,10 +150,6 @@ float fbm(vec2 p){
   return v;
 }
 
-mat2 rot2(float a){
-  float s = sin(a), c = cos(a);
-  return mat2(c, -s, s, c);
-}
 
 // fit a texture to screen like CSS background-size: cover, given an
 // arbitrary aspect-fit scale (so the same math works for both the
@@ -147,7 +170,10 @@ vec2 coverUv(vec2 uv){
 // stroke) is NOT ported, since this project has no seam network for it
 // to draw into.
 float tapTurbBoost(vec2 canvasUv, float tapT){
-  if (uTapTime < 0.0 || tapT < 0.0) return 0.0;
+  // tailFade below already reaches exactly 0 at tapT>=8 (smoothstep(7,8,...)),
+  // so once a tap is older than that it can never contribute anything —
+  // bail out before doing any of the distance/ring/fade math at all
+  if (uTapTime < 0.0 || tapT < 0.0 || tapT > 8.0) return 0.0;
 
   vec2 size = max(uResolution, vec2(1.0));
   vec2 d = (canvasUv - uTapPos) * size;
@@ -165,21 +191,19 @@ float tapTurbBoost(vec2 canvasUv, float tapT){
 }
 
 // underwater domain-warp displacement: two wave trains whose travel
-// direction slowly rotates (uAngleA/uAngleB) and cross-interfere, plus a
-// rotating ripple-noise layer, modulated by a slow turbulence factor so
-// the whole thing drifts between calm and choppy instead of looping.
+// direction slowly rotates (uWaveDirA/uWaveDirB, precomputed per frame
+// in main.js) and cross-interfere, plus a rotating ripple-noise layer,
+// modulated by a slow turbulence factor so the whole thing drifts
+// between calm and choppy instead of looping.
 // `turb` is passed in rather than reading uTurbulence directly so a
 // tap's local turbulence boost (see tapTurbBoost above) can perturb
 // this same field right at the tap point.
 vec2 waveOffset(vec2 uv, float t, float turb){
-  vec2 dirA = vec2(cos(uAngleA), sin(uAngleA));
-  vec2 dirB = vec2(cos(uAngleB), sin(uAngleB));
+  float swellA = sin(dot(uv, uWaveDirA) * 7.0 + t * 0.9);
+  float swellB = sin(dot(uv, uWaveDirB) * 5.3 - t * 0.65 + 1.7);
+  vec2 swell = (uWaveDirA * swellA + uWaveDirB * swellB) * 0.012 * turb;
 
-  float swellA = sin(dot(uv, dirA) * 7.0 + t * 0.9);
-  float swellB = sin(dot(uv, dirB) * 5.3 - t * 0.65 + 1.7);
-  vec2 swell = (dirA * swellA + dirB * swellB) * 0.012 * turb;
-
-  mat2 r = rot2(uAngleA * 0.4);
+  mat2 r = mat2(uWarpRot.x, uWarpRot.y, uWarpRot.z, uWarpRot.w);
   vec2 ruv = r * uv * uRippleScale;
   vec2 n = vec2(
     fbm(ruv + vec2(0.0, t * 0.18)),
@@ -225,7 +249,10 @@ vec2 ghostWaves(vec2 uv){
     broad * (0.35 + 0.20 * left) + fine * (0.12 + 0.10 * upper),
     middle * (0.22 + 0.18 * upper) + crossing * (0.10 + 0.10 * (1.0 - left))
   );
-  return field * uGhostWaveAmount / size;
+  // divides by the FIXED reference resolution, not the live `size`
+  // above (which is only used to aspect-correct the wave pattern's
+  // phase/orientation, not its final magnitude) — see uRefResolution
+  return field * uGhostWaveAmount / max(uRefResolution, vec2(1.0));
 }
 
 // cover-fit + mirrored, but WITHOUT the wave warp — used below to apply
@@ -259,18 +286,18 @@ float areaLuminance(vec2 cameraUv){
   return l0; // was (l0 + l1 + l2) / 3.0;
 }
 
-// glow: a ring of 8 samples around this pixel, kept only where bright,
+// glow: a ring of samples around this pixel, kept only where bright,
 // added back as a soft bloom around highlights — ported from AR1's
-// bloomTap(), shifted by the same single warp displacement as the rest
-// of the image so it moves with the water without each tap aliasing
-// into its own separate circular artifact. Thresholded on the AREA
-// average above (not a single-pixel sample, back to AR1's original
-// 0.55/0.95 range) so small isolated bright dots don't each spawn their
-// own 8-dot ring — only patches of brightness large enough to survive
-// the neighbor average actually bloom.
-vec3 bloomTap(vec2 uv, vec2 dir, float radius, vec2 warpDisp){
-  vec2 cuv = plainCameraUv(uv + dir * radius) + warpDisp;
-  float l = areaLuminance(cuv);
+// bloomTap(). `centerUv` is the pixel's own already-warped camera
+// coordinate (baseCamUv + warpDisp, computed once in main() and passed
+// in), and `offset` is one of the precomputed uBloomOffsetH/V
+// uniforms — this used to re-derive the full cover-fit+mirror
+// transform for every one of the taps via plainCameraUv(uv+dir*radius);
+// since that transform is linear, its effect on a fixed offset is the
+// SAME for every pixel in the frame, so main.js now computes it once
+// per frame on the CPU and this just adds it directly.
+vec3 bloomTapOffset(vec2 centerUv, vec2 offset){
+  float l = areaLuminance(centerUv + offset);
   return vec3(l) * smoothstep(0.55, 0.95, l);
 }
 
@@ -278,38 +305,61 @@ void main(){
   vec2 uv = vUv;
   float t = uTime * uWaveSpeed;
 
+  // computed once, reused for warpDisp below AND for every glow bloom
+  // tap further down (see uBloomOffsetH/V) — no need for each to
+  // re-derive the same cover-fit+mirror transform independently
+  vec2 baseCamUv = plainCameraUv(uv);
   vec2 duv0 = warpedCameraUv(uv, t);
-  vec3 rawBase = sampleCameraAt(duv0);
   // single shared warp displacement, reused by every glow bloom tap
   // below instead of each one re-evaluating the noisy warp on its own
-  vec2 warpDisp = duv0 - plainCameraUv(uv);
+  vec2 warpDisp = duv0 - baseCamUv;
 
   // ---- line-doubling (ghost double-exposure), ported from AR1:
   // blended on the RAW camera samples, before grading, same as AR1's
   // own pipeline order (and unlike the previous ghost effect this
   // replaces, which graded each ghost sample individually) ----
-  vec3 base = rawBase;
   float op = clamp(uGhostOpacity, 0.0, 0.5);
+  // at op==0.5 (the shipped default) this weight is exactly 0, meaning
+  // rawBase never actually contributes to the final "base" color below
+  // — so skip sampling it at all in that case rather than paying for a
+  // texture fetch whose result gets multiplied away
+  float rawBaseWeight = 1.0 - 2.0 * op;
+  vec3 rawBase = (abs(rawBaseWeight) > 0.001) ? sampleCameraAt(duv0) : vec3(0.0);
+  vec3 base = rawBase;
   if (op > 0.001) {
-    float angle = radians(uAngle);
-    vec2 dir = vec2(cos(angle), sin(angle));
-    float breathing = 1.0 + uDrift * sin(uTime * uGhostSpeed * 0.6);
-    vec2 offset = dir * uDouble * breathing / max(uResolution, vec2(1.0));
-    offset += ghostWaves(uv);
+    // uGhostBaseOffset bakes in the direction/angle, the double-amount,
+    // AND the breathing oscillation — all of it frame-invariant (no uv
+    // anywhere in the formula), so main.js computes it once per frame
+    // on the CPU instead of every pixel redoing radians()/cos()/sin()
+    // for an identical result
+    vec2 offset = uGhostBaseOffset + ghostWaves(uv);
 
+    // plainCameraUv(uv+offset) used to be called here (and again for
+    // uv-offset) to re-derive the cover-fit+mirror transform for each
+    // ghost sample — but that transform is affine, so its effect on a
+    // delta is just the delta scaled by uCameraAspectFit (with the x
+    // sign flipped when mirrored), computed once and reused for both
+    // the + and - sample instead of two full re-transforms. duv0 is
+    // already baseCamUv's warped camera coordinate (duv0 ==
+    // baseCamUv + warpDisp), so adding/subtracting this directly from
+    // duv0 lands at exactly the same position the old two-call version
+    // did, just without redoing the transform.
+    vec2 offsetCam = vec2(
+      uCameraAspectFit.x * offset.x * (uMirror > 0.5 ? -1.0 : 1.0),
+      uCameraAspectFit.y * offset.y
+    );
     // reuse the base pixel's ALREADY-COMPUTED warp displacement
-    // (warpDisp) instead of each ghost sample re-running the full
-    // noisy warp (waveOffset -> 2x fbm -> 6 snoise calls, plus
-    // tapTurbBoost again) completely independently — same trick the
-    // glow bloom taps already use below, just applied here too. This
-    // was tripling the shader's single heaviest per-pixel cost (one
-    // full noise evaluation for the base, then one each for ghost and
-    // opposite) for a difference in the water-warp that's too subtle
-    // to notice on two samples this close together anyway.
-    vec3 ghost = sampleCameraAt(plainCameraUv(uv + offset) + warpDisp);
-    vec3 opposite = sampleCameraAt(plainCameraUv(uv - offset) + warpDisp);
+    // (baked into duv0) instead of each ghost sample re-running the
+    // full noisy warp (waveOffset -> 2x fbm -> 6 snoise calls, plus
+    // tapTurbBoost again) completely independently — this was tripling
+    // the shader's single heaviest per-pixel cost (one full noise
+    // evaluation for the base, then one each for ghost and opposite)
+    // for a difference in the water-warp that's too subtle to notice
+    // on two samples this close together anyway.
+    vec3 ghost = sampleCameraAt(duv0 + offsetCam);
+    vec3 opposite = sampleCameraAt(duv0 - offsetCam);
 
-    base = rawBase * (1.0 - 2.0 * op) + (ghost + opposite) * op;
+    base = rawBase * rawBaseWeight + (ghost + opposite) * op;
   }
 
   float lum = luminance(base);
@@ -318,18 +368,10 @@ void main(){
   float bw = (lum - 0.5) * uContrast + 0.5 + uBrightness;
   float result = bw;
 
-  // ---- underwater murk / depth falloff — cheap sine fog, no noise ----
-  float d = distance(uv, vec2(0.5, 0.45));
-  float fog = sin(uv.x*2.0 + uTime*0.07) * cos(uv.y*2.3 - uTime*0.05) * 0.5 + 0.5;
-  result = mix(result, result * 0.75 + fog * 0.12, uMurk);
-
   // ---- vignette ----
+  float d = distance(uv, vec2(0.5, 0.45));
   float vig = smoothstep(0.95, 0.25, d * (1.0 + uVignette));
   result *= mix(1.0, vig, clamp(uVignette, 0.0, 1.0));
-
-  // ---- film grain ----
-  float grainN = fract(sin(dot(uv * uResolution + uTime * 60.0, vec2(12.9898, 78.233))) * 43758.5453);
-  result += (grainN - 0.5) * uGrain;
 
   // soft highlight knee: above a threshold, roll values off toward 1.0
   // asymptotically instead of hard-clamping — keeps full contrast (the
@@ -351,24 +393,30 @@ void main(){
   vec3 outColor = mix(vec3(result), clamp(toned, 0.0, 1.0), clamp(uSaturation, 0.0, 1.0));
 
   // ---- glow (bloom), ported from AR1 ----
-  // ring was 8 taps, then 6 (60° apart); cut further to 4 (90° apart)
-  // for the Pi, combined with areaLuminance's cut to 1 tap above —
-  // roughly 40 texture reads per pixel down to 4. To restore the
-  // 6-direction ring, bring back the two commented-out bloomTap calls
-  // below and change both the "/ 6.0" divide and... — at a cost to how
-  // round/isotropic the bloom shape looks (4 directions reads more
-  // like a soft plus-shape than a circle up close)
+  // ring was 8 taps, then 6 (60° apart); cut further to 4 (90° apart,
+  // the shipped default) for the Pi, combined with areaLuminance's cut
+  // to 1 tap above — roughly 40 texture reads per pixel down to 4.
+  // uBloomOffsetH/V are precomputed per frame in main.js (see their
+  // declaration above) so each tap is just one vector add instead of
+  // redundantly re-deriving the cover-fit+mirror transform on the GPU.
+  //
+  // GLOW_TWO_TAP is an optional dev-only A/B comparison: two opposing
+  // samples instead of four, more directional (less round) but half
+  // the texture reads. It's OFF by default (see GLOW_TWO_TAP_TEST in
+  // main.js) — four-sample stays the shipped default either way.
   if (uGlow > 0.001) {
-    float radius = 10.0 / min(uResolution.x, uResolution.y);
-    vec3 bloom = bloomTap(uv, vec2(1.0, 0.0), radius, warpDisp)
-        // + bloomTap(uv, vec2(0.5, 0.8660254), radius, warpDisp)
-        // + bloomTap(uv, vec2(-0.5, 0.8660254), radius, warpDisp)
-        + bloomTap(uv, vec2(-1.0, 0.0), radius, warpDisp)
-        // + bloomTap(uv, vec2(-0.5, -0.8660254), radius, warpDisp)
-        // + bloomTap(uv, vec2(0.5, -0.8660254), radius, warpDisp)
-        + bloomTap(uv, vec2(0.0, 1.0), radius, warpDisp)
-        + bloomTap(uv, vec2(0.0, -1.0), radius, warpDisp);
-    outColor += (bloom / 4.0) * uGlow; // was / 6.0
+    vec2 bloomCenter = baseCamUv + warpDisp;
+#ifdef GLOW_TWO_TAP
+    vec3 bloom = bloomTapOffset(bloomCenter, uBloomOffsetH)
+        + bloomTapOffset(bloomCenter, -uBloomOffsetH);
+    outColor += (bloom / 2.0) * uGlow;
+#else
+    vec3 bloom = bloomTapOffset(bloomCenter, uBloomOffsetH)
+        + bloomTapOffset(bloomCenter, -uBloomOffsetH)
+        + bloomTapOffset(bloomCenter, uBloomOffsetV)
+        + bloomTapOffset(bloomCenter, -uBloomOffsetV);
+    outColor += (bloom / 4.0) * uGlow;
+#endif
     outColor = clamp(outColor, 0.0, 1.0);
   }
 
@@ -397,7 +445,12 @@ void main(){
   // nothing) black margin visible around it, and vice versa for > 1
   vec2 ovUv = (baseOvUv - 0.5) / max(uOverlayScale, 0.001) + 0.5;
 
-  if (ovUv.x >= 0.0 && ovUv.x <= 1.0 && ovUv.y >= 0.0 && ovUv.y <= 1.0) {
+  // uOverlayOpacity checked FIRST so the texture2D sample below is
+  // skipped entirely whenever the sculpture is fully invisible anyway
+  // — during the wait phase between loops, or at the very start/end of
+  // its fade — rather than sampling a texture whose result gets
+  // multiplied by zero regardless
+  if (uOverlayOpacity > 0.001 && ovUv.x >= 0.0 && ovUv.x <= 1.0 && ovUv.y >= 0.0 && ovUv.y <= 1.0) {
     vec3 ov = texture2D(uOverlay, vec2(ovUv.x, 1.0 - ovUv.y)).rgb;
     // fade the overlay out well before its own frame edge, instead of
     // cutting off hard right at it — the glow in the source footage
