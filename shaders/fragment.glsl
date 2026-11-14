@@ -54,7 +54,6 @@ uniform float uWaveSpeed;
 uniform float uRippleScale;
 uniform float uContrast;
 uniform float uBrightness;
-uniform float uVignette;
 uniform float uSaturation;
 
 // line-doubling + glow, ported from AR1 (filter.frag): two extra
@@ -241,13 +240,10 @@ vec2 ghostWaves(vec2 uv){
   vec2 p = q * uGhostWaveScale;
   float broad = sin(dot(p, vec2(5.0, 8.0)) - t * 0.43);
   float middle = sin(dot(p, vec2(-14.0, 9.0)) + t * 0.79 + 1.3);
-  float fine = sin(dot(p, vec2(26.0, 19.0)) - t * 1.17 + 3.1);
-  float crossing = sin(dot(p, vec2(11.0, -21.0)) + t * 0.58 + 0.7);
-  float left = 0.5 + 0.5 * sin(p.x * 3.2 + p.y * 1.1);
-  float upper = 0.5 + 0.5 * cos(p.y * 4.0 - p.x * 0.8);
+  float envelope = 0.5 + 0.5 * sin(p.x * 3.2 + p.y * 1.1);
   vec2 field = vec2(
-    broad * (0.35 + 0.20 * left) + fine * (0.12 + 0.10 * upper),
-    middle * (0.22 + 0.18 * upper) + crossing * (0.10 + 0.10 * (1.0 - left))
+    broad * (0.35 + 0.20 * envelope),
+    middle * (0.22 + 0.18 * envelope)
   );
   // divides by the FIXED reference resolution, not the live `size`
   // above (which is only used to aspect-correct the wave pattern's
@@ -365,13 +361,8 @@ void main(){
   float lum = luminance(base);
 
   // ---- tonal grade (B&W) ----
-  float bw = (lum - 0.5) * uContrast + 0.5 + uBrightness;
-  float result = bw;
+  float result = (lum - 0.5) * uContrast + 0.5 + uBrightness;
 
-  // ---- vignette ----
-  float d = distance(uv, vec2(0.5, 0.45));
-  float vig = smoothstep(0.95, 0.25, d * (1.0 + uVignette));
-  result *= mix(1.0, vig, clamp(uVignette, 0.0, 1.0));
 
   // soft highlight knee: above a threshold, roll values off toward 1.0
   // asymptotically instead of hard-clamping — keeps full contrast (the
@@ -384,7 +375,7 @@ void main(){
   }
   result = clamp(result, 0.0, 1.0);
 
-  // ---- b&w saturation: all of the grading/vignette/grain/murk above
+  // ---- b&w saturation: the tonal grade above
   // was computed as a single luminance delta from the (possibly
   // line-doubled) base sample; to reintroduce color we apply that
   // exact same delta to every channel (so highlights, grain etc. look

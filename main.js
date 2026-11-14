@@ -29,7 +29,6 @@ const DEFAULTS = {
   rippleScale: 1.80,
   contrast: 1.58,
   brightness: 0.04,
-  vignette: 0.44,
   saturation: 0.23,
   // line-doubling + glow, ported from AR1 (filter.frag) — values below
   // are AR1's own current defaults, carried over as-is
@@ -430,7 +429,6 @@ async function init() {
     uRippleScale: loc("uRippleScale"),
     uContrast: loc("uContrast"),
     uBrightness: loc("uBrightness"),
-    uVignette: loc("uVignette"),
     uSaturation: loc("uSaturation"),
     uTurbulence: loc("uTurbulence"),
     uWaveDirA: loc("uWaveDirA"),
@@ -778,7 +776,6 @@ async function init() {
     gl.uniform1f(U.uRippleScale, params.rippleScale);
     gl.uniform1f(U.uContrast, params.contrast);
     gl.uniform1f(U.uBrightness, params.brightness);
-    gl.uniform1f(U.uVignette, params.vignette);
     gl.uniform1f(U.uSaturation, params.saturation);
     gl.uniform1f(U.uTurbulence, turbulence);
     gl.uniform2f(U.uWaveDirA, waveDirA[0], waveDirA[1]);
