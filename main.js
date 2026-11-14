@@ -785,8 +785,9 @@ async function init() {
     gl.uniform1f(U.uDistortion, params.distortion);
     gl.uniform1f(U.uWaveSpeed, params.waveSpeed);
     gl.uniform1f(U.uRippleScale, params.rippleScale);
-    gl.uniform1f(U.uContrast, params.contrast);
-    gl.uniform1f(U.uBrightness, params.brightness);
+    // The Pi's installation camera needs a gentler grade to retain shadow detail.
+    gl.uniform1f(U.uContrast, piCameraMode ? 1.12 : params.contrast);
+    gl.uniform1f(U.uBrightness, piCameraMode ? 0.09 : params.brightness);
     gl.uniform1f(U.uSaturation, params.saturation);
     gl.uniform1f(U.uTurbulence, turbulence);
     gl.uniform2f(U.uWaveDirA, waveDirA[0], waveDirA[1]);
