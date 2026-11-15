@@ -494,8 +494,12 @@ async function init() {
   // canvas is always stretched to fill the same physical screen
   // regardless of its internal resolution, so a fixed UV fraction maps
   // to the same fraction of the final displayed image either way.
+  // temporarily just one entry for the Pi so the watchdog has nowhere
+  // to drop render scale to — for actually looking at 0.55 itself,
+  // unaffected by framerate. Put the fallback steps back
+  // ([0.55, 0.45, 0.40, 0.35, 0.28]) once you're done checking it.
   const RENDER_SCALE_STEPS = piCameraMode
-    ? [0.45, 0.40, 0.35, 0.28]
+    ? [0.55]
     : [0.45, 0.40, 0.35, 0.28, 0.22];
   let renderScaleStepIndex = 0;
 
