@@ -568,7 +568,12 @@ async function init() {
   let perfDegradeLevel = 0;
   let lastDegradeChangeMs = 0;
   const PERF_BAD_MS = 45; // sustained average below ~22fps -> degrade further
-  const PERF_GOOD_MS = 28; // sustained average above ~35fps -> recover a step
+  // was 28 (~35fps) — too strict: a Pi settled at a smooth-feeling but
+  // moderate framerate (e.g. 25-30fps) never cleared this bar, so once
+  // it degraded (even briefly, e.g. during startup) it could get stuck
+  // at a degraded level — including with the overlay disabled —
+  // forever, despite otherwise running fine
+  const PERF_GOOD_MS = 36; // sustained average below ~28fps -> recover a step
   const PERF_COOLDOWN_MS = 3000; // minimum time between degrade/recover steps
   const PERF_MAX_LEVEL = RENDER_SCALE_STEPS.length - 1 + 3; // render-scale steps + glow/lines/overlay
 

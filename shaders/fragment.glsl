@@ -178,15 +178,19 @@ float tapTurbBoost(vec2 canvasUv, float tapT){
   vec2 d = (canvasUv - uTapPos) * size;
   float dist = length(d) / min(size.x, size.y);
 
+  // widened (0.1 -> 0.16) and slowed to decay (0.45 -> 0.3) so the
+  // ring reads as a clear, lingering pulse instead of a thin blip that's
+  // easy to miss on a phone screen or from a few feet back at the Pi
+  // kiosk; strength boosted (2.6 -> 4.2) to match
   float speed = 0.62;
   float radius = 0.035 + tapT * speed;
-  float ringWidth = 0.1;
+  float ringWidth = 0.16;
   float ring = exp(-pow((dist - radius) / ringWidth, 2.0));
 
-  float fade = exp(-tapT * 0.45);
+  float fade = exp(-tapT * 0.3);
   float tailFade = 1.0 - smoothstep(7.0, 8.0, tapT);
 
-  return ring * fade * tailFade * 2.6;
+  return ring * fade * tailFade * 4.2;
 }
 
 // underwater domain-warp displacement: two wave trains whose travel
