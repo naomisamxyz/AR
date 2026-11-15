@@ -499,9 +499,19 @@ async function init() {
   // unaffected by framerate. Put the fallback steps back
   // ([0.55, 0.45, 0.40, 0.35, 0.28]) once you're done checking it.
   const RENDER_SCALE_STEPS = piCameraMode
-    ? [0.55]
+    ? [0.75, 0.55, 0.45, 0.35, 0.28]
     : [0.45, 0.40, 0.35, 0.28, 0.22];
   let renderScaleStepIndex = 0;
+
+  // TEMPORARY, Pi-only — manual render-resolution override for testing
+  // (see #resTestBtn in index.html/wireControls below). When set, this
+  // takes over from the watchdog's own RENDER_SCALE_STEPS entirely;
+  // null means "let the watchdog drive it" (the normal/eventual state
+  // once this is removed). Starts at 1.0 (full/native resolution) in
+  // Pi mode so the first thing you see when testing is "100%".
+  const RES_TEST_LEVELS = [1.0, 0.75, 0.55, 0.45, 0.35, 0.28];
+  let resTestIndex = 0;
+  let resTestOverride = piCameraMode ? RES_TEST_LEVELS[0] : null;
 
   // FIXED reference render-target size — always the dimensions the
   // 0.45 (un-degraded) scale step would produce at the current window
@@ -525,7 +535,7 @@ async function init() {
 
   function resize() {
     const dpr = window.devicePixelRatio || 1;
-    const scale = RENDER_SCALE_STEPS[renderScaleStepIndex];
+    const scale = resTestOverride != null ? resTestOverride : RENDER_SCALE_STEPS[renderScaleStepIndex];
     const w = Math.floor(window.innerWidth * dpr * scale);
     const h = Math.floor(window.innerHeight * dpr * scale);
     if (canvas.width !== w || canvas.height !== h) {
@@ -537,6 +547,24 @@ async function init() {
   }
   window.addEventListener("resize", resize);
   resize();
+
+  // TEMPORARY, Pi-only render-resolution test toggle — see
+  // RES_TEST_LEVELS/resTestOverride above. Remove this block, the
+  // button in index.html, and its CSS once a scale is settled on.
+  if (piCameraMode) {
+    const resTestBtn = document.getElementById("resTestBtn");
+    const updateResTestLabel = () => {
+      resTestBtn.textContent = Math.round(RES_TEST_LEVELS[resTestIndex] * 100) + "%";
+    };
+    resTestBtn.style.display = "block";
+    updateResTestLabel();
+    resTestBtn.addEventListener("click", () => {
+      resTestIndex = (resTestIndex + 1) % RES_TEST_LEVELS.length;
+      resTestOverride = RES_TEST_LEVELS[resTestIndex];
+      updateResTestLabel();
+      resize();
+    });
+  }
 
   const startTime = performance.now();
   // `now` always starts at exactly 0 on every launch, which made the
